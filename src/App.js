@@ -664,4 +664,4 @@ function ProductModal({data,onSave,onClose,initial}){
     <SaveBtn color={C.navy} onClick={()=>{if(!f.name)return alert("Name required");onSave(f);}}>Save Product</SaveBtn>
   </ModalBase>);
 }
-export default App;
+export default App:
