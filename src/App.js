@@ -155,11 +155,11 @@ export default function App(){
       <style>{`@media(min-width:768px){.mob{display:none!important}.desk{display:flex!important}.main{margin-left:220px!important}}@media(max-width:767px){.mob{display:flex!important}.desk{display:none!important}.main{margin-left:0!important;padding-bottom:80px!important}}.main{max-width:860px;padding:18px 16px 40px;}`}</style>
       <div className="desk" style={{display:"none"}}><Sidebar/></div>
       <div className="mob" style={{display:"none",background:C.navy,padding:"calc(env(safe-area-inset-top,0px)+12px) 16px 10px",position:"sticky",top:0,zIndex:100,boxShadow:"0 2px 20px rgba(0,0,0,0.4)",alignItems:"center",justifyContent:"space-between",gap:8}}>
-        <div><div style={{fontSize:9,letterSpacing:2,color:C.gold,textTransform:"uppercase",fontWeight:700}}>Amihem Sales</div><div style={{fontSize:18,fontWeight:900,color:"#fff"}}>Sales Manager</div></div>
+        <div><div style={{fontSize:9,letterSpacing:2,color:C.gold,textTransform:"uppercase",fontWeight:700}}>Navkar Fabrics</div><div style={{fontSize:18,fontWeight:900,color:"#fff"}}>Sales Manager</div></div>
         <div style={{display:"flex",gap:6}}>
           <button onClick={()=>importRef.current&&importRef.current.click()} style={hdrBtn()}>📥<span style={{fontSize:9}}>Excel</span></button>
-          <button onClick={()=>exportBackup(data)} style={hdrBtn()}>🔄<span style={{fontSize:9}}>Backup</span></button>
-          <button onClick={()=>restoreRef.current&&restoreRef.current.click()} style={hdrBtn()}>📤<span style={{fontSize:9}}>Restore</span></button>
+          <button onClick={()=>exportBackup(data)} style={hdrBtn()}>📤<span style={{fontSize:9}}>Backup</span></button>
+          <button onClick={()=>restoreRef.current&&restoreRef.current.click()} style={hdrBtn()}>🔄<span style={{fontSize:9}}>Restore</span></button>
         </div>
       </div>
       <div className="mob" style={{display:"none",background:C.navyMid,overflowX:"auto",WebkitOverflowScrolling:"touch",scrollbarWidth:"none",position:"sticky",top:72,zIndex:99}}>
@@ -664,4 +664,3 @@ function ProductModal({data,onSave,onClose,initial}){
     <SaveBtn color={C.navy} onClick={()=>{if(!f.name)return alert("Name required");onSave(f);}}>Save Product</SaveBtn>
   </ModalBase>);
 }
-export default App;
