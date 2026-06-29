@@ -34,7 +34,7 @@ function SmartInput({value,onChange,placeholder,list,idPrefix}){const id=`${idPr
 
 function generatePDF(title,content){
   const win=window.open("","_blank");
-  win.document.write(`<!DOCTYPE html><html><head><title>${title}</title><style>body{font-family:Arial,sans-serif;font-size:13px;color:#111;padding:30px;max-width:800px;margin:auto;}h1{font-size:20px;border-bottom:2px solid #111;padding-bottom:8px;}table{width:100%;border-collapse:collapse;margin-top:16px;}th{background:#0F1923;color:#E8C97E;padding:8px 10px;text-align:left;font-size:12px;}td{padding:7px 10px;border-bottom:1px solid #eee;font-size:12px;}tr:nth-child(even){background:#f9f9f9;}.tot td{background:#0F1923;color:#E8C97E;font-weight:bold;border:none;}.hdr{display:flex;justify-content:space-between;margin-bottom:20px;}.co{font-size:22px;font-weight:bold;color:#0F1923;}</style></head><body><div class="hdr"><div><div class="co">Navkar Fabrics</div><div style="font-size:12px;color:#666">Trading Sales Report</div></div><div style="text-align:right;font-size:12px;color:#666">Date: ${new Date().toLocaleDateString("en-IN")}</div></div><h1>${title}</h1>${content}<script>window.onload=()=>{window.print();}<\/script></body></html>`);
+  win.document.write(`<!DOCTYPE html><html><head><title>${title}</title><style>body{font-family:Arial,sans-serif;font-size:13px;color:#111;padding:30px;max-width:800px;margin:auto;}h1{font-size:20px;border-bottom:2px solid #111;padding-bottom:8px;}table{width:100%;border-collapse:collapse;margin-top:16px;}th{background:#0F1923;color:#E8C97E;padding:8px 10px;text-align:left;font-size:12px;}td{padding:7px 10px;border-bottom:1px solid #eee;font-size:12px;}tr:nth-child(even){background:#f9f9f9;}.tot td{background:#0F1923;color:#E8C97E;font-weight:bold;border:none;}.hdr{display:flex;justify-content:space-between;margin-bottom:20px;}.co{font-size:22px;font-weight:bold;color:#0F1923;}</style></head><body><div class="hdr"><div><div class="co">Amihem Sales</div><div style="font-size:12px;color:#666">Trading Sales Report</div></div><div style="text-align:right;font-size:12px;color:#666">Date: ${new Date().toLocaleDateString("en-IN")}</div></div><h1>${title}</h1>${content}<script>window.onload=()=>{window.print();}<\/script></body></html>`);
   win.document.close();
 }
 
@@ -135,17 +135,17 @@ export default function App(){
   const totTradingSale=data.tradingSales.reduce((a,s)=>a+(+s.amount||0),0);
   const totTradingPaid=data.tradingPayments.reduce((a,p)=>a+(+p.amount||0),0);
   const totTradingOut=Object.values(tradingOut).reduce((a,v)=>a+Math.max(0,v.due+(v.debit||0)-v.paid-(v.credit||0)),0);
-  const totComm=data.tradingPayments.reduce((a,p)=>a+(+p.commissionEarned||0),0);
+  const totComm=calcFIFOCommission(data.tradingSales,data.tradingPayments).totalCommission;
   const overdueCount=Object.values(tradingOut).filter(v=>Math.max(0,v.due+(v.debit||0)-v.paid-(v.credit||0))>0).length;
 
   const Sidebar=()=>(
     <div style={{width:220,background:C.navy,minHeight:"100vh",position:"fixed",left:0,top:0,zIndex:150,display:"flex",flexDirection:"column",padding:"20px 0"}}>
-      <div style={{padding:"0 20px 24px"}}><div style={{fontSize:10,letterSpacing:2.5,color:C.gold,textTransform:"uppercase",fontWeight:700}}>Navkar Fabrics</div><div style={{fontSize:20,fontWeight:900,color:"#fff",marginTop:4}}>Sales Manager</div></div>
+      <div style={{padding:"0 20px 24px"}}><div style={{fontSize:10,letterSpacing:2.5,color:C.gold,textTransform:"uppercase",fontWeight:700}}>Amihem</div><div style={{fontSize:20,fontWeight:900,color:"#fff",marginTop:4}}>Sales</div></div>
       {TABS.map(t=>(<button key={t.id} onClick={()=>setTab(t.id)} style={{background:tab===t.id?"rgba(232,201,126,0.12)":"transparent",border:"none",borderLeft:tab===t.id?`3px solid ${C.gold}`:"3px solid transparent",padding:"12px 20px",textAlign:"left",color:tab===t.id?C.gold:"rgba(255,255,255,0.65)",fontSize:13.5,fontWeight:tab===t.id?700:400,cursor:"pointer",display:"flex",alignItems:"center",gap:10}}><span>{t.icon}</span>{t.label}{t.id==="Outstanding"&&overdueCount>0&&<span style={{background:C.red,color:"#fff",borderRadius:20,fontSize:10,fontWeight:800,padding:"2px 7px",marginLeft:"auto"}}>{overdueCount}</span>}</button>))}
       <div style={{marginTop:"auto",padding:"16px 20px",borderTop:"1px solid rgba(255,255,255,0.08)",display:"flex",flexDirection:"column",gap:8}}>
-        <button onClick={()=>importRef.current&&importRef.current.click()} style={{...hdrBtn(),flexDirection:"row",gap:8,width:"100%",justifyContent:"flex-start",padding:"10px 12px"}}>📥 <span style={{fontSize:12}}>Import Excel</span></button>
-        <button onClick={()=>exportBackup(data)} style={{...hdrBtn(),flexDirection:"row",gap:8,width:"100%",justifyContent:"flex-start",padding:"10px 12px"}}>📤 <span style={{fontSize:12}}>Backup</span></button>
-        <button onClick={()=>restoreRef.current&&restoreRef.current.click()} style={{...hdrBtn(),flexDirection:"row",gap:8,width:"100%",justifyContent:"flex-start",padding:"10px 12px"}}>🔄 <span style={{fontSize:12}}>Restore</span></button>
+        <button onClick={()=>importRef.current&&importRef.current.click()} style={{...hdrBtn(),flexDirection:"row",gap:8,width:"100%",justifyContent:"flex-start",padding:"10px 12px"}}>📊 <span style={{fontSize:12}}>Import Excel</span></button>
+        <button onClick={()=>exportBackup(data)} style={{...hdrBtn(),flexDirection:"row",gap:8,width:"100%",justifyContent:"flex-start",padding:"10px 12px"}}>☁️ <span style={{fontSize:12}}>Backup</span></button>
+        <button onClick={()=>restoreRef.current&&restoreRef.current.click()} style={{...hdrBtn(),flexDirection:"row",gap:8,width:"100%",justifyContent:"flex-start",padding:"10px 12px"}}>📂 <span style={{fontSize:12}}>Restore</span></button>
       </div>
     </div>
   );
@@ -155,11 +155,11 @@ export default function App(){
       <style>{`@media(min-width:768px){.mob{display:none!important}.desk{display:flex!important}.main{margin-left:220px!important}}@media(max-width:767px){.mob{display:flex!important}.desk{display:none!important}.main{margin-left:0!important;padding-bottom:80px!important}}.main{max-width:860px;padding:18px 16px 40px;}`}</style>
       <div className="desk" style={{display:"none"}}><Sidebar/></div>
       <div className="mob" style={{display:"none",background:C.navy,padding:"calc(env(safe-area-inset-top,0px)+12px) 16px 10px",position:"sticky",top:0,zIndex:100,boxShadow:"0 2px 20px rgba(0,0,0,0.4)",alignItems:"center",justifyContent:"space-between",gap:8}}>
-        <div><div style={{fontSize:9,letterSpacing:2,color:C.gold,textTransform:"uppercase",fontWeight:700}}>Navkar Fabrics</div><div style={{fontSize:18,fontWeight:900,color:"#fff"}}>Sales Manager</div></div>
+        <div><div style={{fontSize:9,letterSpacing:2,color:C.gold,textTransform:"uppercase",fontWeight:700}}>Amihem</div><div style={{fontSize:18,fontWeight:900,color:"#fff"}}>Sales</div></div>
         <div style={{display:"flex",gap:6}}>
-          <button onClick={()=>importRef.current&&importRef.current.click()} style={hdrBtn()}>📥<span style={{fontSize:9}}>Excel</span></button>
-          <button onClick={()=>exportBackup(data)} style={hdrBtn()}>📤<span style={{fontSize:9}}>Backup</span></button>
-          <button onClick={()=>restoreRef.current&&restoreRef.current.click()} style={hdrBtn()}>🔄<span style={{fontSize:9}}>Restore</span></button>
+          <button onClick={()=>importRef.current&&importRef.current.click()} style={hdrBtn()}><span style={{fontSize:18}}>📊</span><span style={{fontSize:9}}>Excel</span></button>
+          <button onClick={()=>exportBackup(data)} style={hdrBtn()}><span style={{fontSize:18}}>☁️</span><span style={{fontSize:9}}>Backup</span></button>
+          <button onClick={()=>restoreRef.current&&restoreRef.current.click()} style={hdrBtn()}><span style={{fontSize:18}}>📂</span><span style={{fontSize:9}}>Restore</span></button>
         </div>
       </div>
       <div className="mob" style={{display:"none",background:C.navyMid,overflowX:"auto",WebkitOverflowScrolling:"touch",scrollbarWidth:"none",position:"sticky",top:72,zIndex:99}}>
@@ -172,7 +172,7 @@ export default function App(){
         {tab==="Outstanding"&&<OutstandingTab tradingOut={tradingOut} data={data} onAddPay={(pre)=>setModal({type:"payment",preCustomer:pre})} generatePDF={generatePDF}/>}
         {tab==="Aging"      &&<AgingTab data={data} generatePDF={generatePDF}/>}
         {tab==="Analytics"  &&<AnalyticsTab data={data} tradingOut={tradingOut}/>}
-        {tab==="Commission" &&<CommissionTab data={data} totComm={totComm} generatePDF={generatePDF}/>}
+        {tab==="Commission" &&<CommissionTab data={data} generatePDF={generatePDF}/>}
         {tab==="Masters"    &&<MastersTab data={data} onAdd={setModal} onDel={del} onEdit={(type,rec)=>setModal({type:`edit-${type}`,rec})} onImportExcel={()=>importRef.current&&importRef.current.click()}/>}
         {tab==="Reports"    &&<ReportsTab data={data} tradingOut={tradingOut} tots={{totTradingSale,totTradingPaid,totTradingOut,totComm}} generatePDF={generatePDF}/>}
       </div>
@@ -324,24 +324,40 @@ function ReturnsTab({data,onAddDebit,onAddCredit,onDel}){
 // ─── OUTSTANDING TAB ─────────────────────────────────────────────
 function OutstandingTab({tradingOut,data,onAddPay,generatePDF}){
   const[search,setSearch]=useState("");
+  const[expanded,setExpanded]=useState(null);
   const todayMs=new Date().setHours(0,0,0,0);
-  const phoneMap={};data.customers.forEach(c=>{phoneMap[c.name]=c.phone;});
+  const phoneMap={};const creditDaysMap={};
+  data.customers.forEach(c=>{phoneMap[c.name]=c.phone;creditDaysMap[c.name]=parseInt(c.creditDays||30);});
+
+  const ageBucket=(days)=>{if(days<=30)return{label:"0-30 Days",color:C.green};if(days<=60)return{label:"31-60 Days",color:C.orange};if(days<=90)return{label:"61-90 Days",color:"#E67E22"};if(days<=120)return{label:"91-120 Days",color:C.red};return{label:"Above 120 Days",color:"#922B21"};};
+
   const entries=Object.values(tradingOut).map(v=>{
     const net=Math.max(0,v.due+(v.debit||0)-v.paid-(v.credit||0));
     const custSales=data.tradingSales.filter(s=>s.customerName===v.name).sort((a,b)=>new Date(a.date)-new Date(b.date));
     let rem=v.paid;let maxDays=0;let oldestBill=null;let oldestDate=null;
-    custSales.forEach(s=>{const amt=+s.amount||0;const d=Math.min(amt,rem);rem-=d;const left=amt-d;if(left>0){const days=Math.floor((todayMs-new Date(s.date).setHours(0,0,0,0))/86400000);if(days>maxDays){maxDays=days;oldestBill=s.billNo;oldestDate=s.date;}}});
-    return{...v,net,maxDays,oldestBill,oldestDate};
+    const openBills=[];
+    custSales.forEach(s=>{
+      const amt=+s.amount||0;
+      const d=Math.min(amt,rem);rem-=d;const left=amt-d;
+      if(left>0){
+        const days=Math.floor((todayMs-new Date(s.date).setHours(0,0,0,0))/86400000);
+        if(days>maxDays){maxDays=days;oldestBill=s.billNo;oldestDate=s.date;}
+        openBills.push({billNo:s.billNo||"—",date:s.date,outstanding:left,days});
+      }
+    });
+    return{...v,net,maxDays,oldestBill,oldestDate,openBills};
   }).filter(v=>v.net>0).filter(v=>!search||v.name.toLowerCase().includes(search.toLowerCase())).sort((a,b)=>b.net-a.net);
 
   const total=entries.reduce((a,v)=>a+v.net,0);
-  const ageBucket=(days)=>{if(days<=30)return{label:"0-30 Days",color:C.green};if(days<=60)return{label:"31-60 Days",color:C.orange};if(days<=90)return{label:"61-90 Days",color:"#E67E22"};if(days<=120)return{label:"91-120 Days",color:C.red};return{label:"Above 120 Days",color:"#922B21"};};
 
-  const buildWA=(v)=>{const b=ageBucket(v.maxDays);return `Navkar Fabrics\nDate: ${new Date().toLocaleDateString("en-IN")}\n\nDear ${v.name},\n\nThis is a gentle reminder regarding your outstanding payment.\n\nBill No      : ${v.oldestBill||"N/A"}\nBill Date    : ${fmtD(v.oldestDate)}\nOutstanding  : Rs. ${fmt(v.net)}\nDays Overdue : ${v.maxDays} Days (${b.label})\n\nKindly arrange the payment at your earliest convenience.\n\nRegards,\nNavkar Fabrics`;};
+  const buildWA=(v)=>{
+    const billLines=v.openBills.map(b=>`Bill Date    : ${fmtD(b.date)}\nBill No.     : ${b.billNo}\nOutstanding  : Rs. ${fmt(b.outstanding)}\nDays         : ${b.days} Days\n`).join("\n");
+    return `*Amihem Sales*\nDate: ${new Date().toLocaleDateString("en-IN")}\n\nDear ${v.name},\n\nThis is a gentle reminder regarding your outstanding payment:\n\n${billLines}\n*Total Outstanding : Rs. ${fmt(v.net)}*\n\nKindly arrange the payment at your earliest convenience.\n\nRegards,\nAmihem Sales`;
+  };
 
   const doPDF=()=>{
-    const rows=entries.map(v=>`<tr><td>${v.name}</td><td>${v.oldestBill||"—"}</td><td>${fmtD(v.oldestDate)}</td><td style="text-align:right">₹${fmt(v.due)}</td><td style="text-align:right">₹${fmt(v.paid)}</td><td style="text-align:right;color:#E74C3C;font-weight:bold">₹${fmt(v.net)}</td><td>${ageBucket(v.maxDays).label}</td></tr>`).join("");
-    generatePDF("Outstanding Statement",`<table><thead><tr><th>Customer</th><th>Bill No</th><th>Bill Date</th><th>Total Sales</th><th>Paid</th><th>Outstanding</th><th>Ageing</th></tr></thead><tbody>${rows}<tr class="tot"><td colspan="5">TOTAL</td><td>₹${fmt(total)}</td><td></td></tr></tbody></table>`);
+    const allRows=entries.flatMap(v=>v.openBills.map(b=>`<tr><td>${v.name}</td><td>${b.billNo}</td><td>${fmtD(b.date)}</td><td style="text-align:right;color:#E74C3C;font-weight:bold">₹${fmt(b.outstanding)}</td><td>${b.days} Days</td><td>${ageBucket(b.days).label}</td></tr>`)).join("");
+    generatePDF("Customer Outstanding — Bill-wise",`<table><thead><tr><th>Customer</th><th>Bill No</th><th>Bill Date</th><th>Outstanding</th><th>Days</th><th>Ageing</th></tr></thead><tbody>${allRows}<tr class="tot"><td colspan="3">TOTAL</td><td>₹${fmt(total)}</td><td colspan="2"></td></tr></tbody></table>`);
   };
 
   return(<div>
@@ -355,7 +371,7 @@ function OutstandingTab({tradingOut,data,onAddPay,generatePDF}){
       <div style={{fontSize:24,fontWeight:900,color:"#fff"}}>₹{fmt(total)}</div>
     </div>
     {entries.length===0&&<Empty text="All payments clear. No outstanding."/>}
-    {entries.map(v=>{const bucket=ageBucket(v.maxDays);const phone=phoneMap[v.name]||v.phone||"";return(
+    {entries.map(v=>{const bucket=ageBucket(v.maxDays);const phone=phoneMap[v.name]||v.phone||"";const isOpen=expanded===v.name;const creditDays=creditDaysMap[v.name]||30;return(
       <div key={v.name} style={{background:C.card,borderRadius:14,padding:"14px 15px",marginBottom:12,boxShadow:"0 1px 8px rgba(0,0,0,0.07)",borderLeft:`4px solid ${bucket.color}`}}>
         <Row><div><B style={{fontSize:15}}>{v.name}</B>{phone&&<Mute>{phone}</Mute>}</div><div style={{textAlign:"right"}}><div style={{fontWeight:900,fontSize:18,color:C.red}}>₹{fmt(v.net)}</div><span style={{fontSize:10,color:bucket.color,fontWeight:700}}>{bucket.label}</span></div></Row>
         <div style={{display:"flex",gap:14,marginTop:8,fontSize:12,color:C.muted,flexWrap:"wrap"}}>
@@ -363,12 +379,29 @@ function OutstandingTab({tradingOut,data,onAddPay,generatePDF}){
           <span>Paid: <b style={{color:C.green}}>₹{fmt(v.paid)}</b></span>
           {v.debit>0&&<span>Debit: <b style={{color:C.red}}>₹{fmt(v.debit)}</b></span>}
           {v.credit>0&&<span>Credit: <b style={{color:C.teal}}>₹{fmt(v.credit)}</b></span>}
-          {v.oldestBill&&<span>Bill: <b>{v.oldestBill}</b></span>}
+          <span>Credit Days: <b style={{color:C.navy}}>{creditDays}d</b></span>
           {v.maxDays>0&&<span>Overdue: <b style={{color:bucket.color}}>{v.maxDays}d</b></span>}
         </div>
+        {isOpen&&<div style={{marginTop:12,paddingTop:10,borderTop:`1px solid ${C.border}`}}>
+          <div style={{fontWeight:700,fontSize:12.5,color:C.navy,marginBottom:8}}>Bill-wise Outstanding</div>
+          {v.openBills.map((b,i)=>{const bb=ageBucket(b.days);return(<div key={i} style={{background:"#F7F9FC",borderRadius:10,padding:"10px 12px",marginBottom:8,borderLeft:`3px solid ${bb.color}`}}>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+              <div>
+                <div style={{fontSize:13,fontWeight:700,color:C.navy}}>Bill No. : {b.billNo}</div>
+                <div style={{fontSize:12,color:C.muted,marginTop:2}}>Bill Date : {fmtD(b.date)}</div>
+                <div style={{fontSize:12,color:C.muted}}>Days : <b style={{color:bb.color}}>{b.days} Days</b></div>
+              </div>
+              <div style={{textAlign:"right"}}>
+                <div style={{fontWeight:900,fontSize:15,color:C.red}}>₹{fmt(b.outstanding)}</div>
+                <div style={{fontSize:10,color:bb.color,fontWeight:700}}>{bb.label}</div>
+              </div>
+            </div>
+          </div>);})}
+        </div>}
         <div style={{display:"flex",gap:8,marginTop:12,flexWrap:"wrap"}}>
           <button onClick={()=>onAddPay(v.name)} style={{background:C.blue,color:"#fff",border:"none",borderRadius:9,padding:"9px 14px",fontSize:12,fontWeight:700,cursor:"pointer",flex:1,minHeight:40}}>Record Payment</button>
-          <button onClick={()=>{const n=phone?"91"+String(phone).replace(/\D/g,"").slice(-10):"";window.open(`https://wa.me/${n}?text=${encodeURIComponent(buildWA(v))}`,"_blank");}} style={{background:"#E8FBF0",color:"#25D366",border:"1px solid #25D366",borderRadius:9,padding:"9px 14px",fontSize:12,fontWeight:700,cursor:"pointer",flex:1,minHeight:40}}>WhatsApp</button>
+          <button onClick={()=>setExpanded(isOpen?null:v.name)} style={{background:"#F0F4F8",color:C.navy,border:"none",borderRadius:9,padding:"9px 14px",fontSize:12,fontWeight:700,cursor:"pointer",minHeight:40}}>{isOpen?"Hide Bills":"View Bills"}</button>
+          <button onClick={()=>{const n=phone?"91"+String(phone).replace(/\D/g,"").slice(-10):"";window.open(`https://wa.me/${n}?text=${encodeURIComponent(buildWA(v))}`,"_blank");}} style={{background:"#E8FBF0",color:"#25D366",border:"1px solid #25D366",borderRadius:9,padding:"9px 14px",fontSize:12,fontWeight:700,cursor:"pointer",flex:1,minHeight:40}}>💬 WhatsApp</button>
         </div>
       </div>
     );})}
@@ -451,24 +484,92 @@ function AnalyticsTab({data,tradingOut}){
 }
 
 // ─── COMMISSION TAB ──────────────────────────────────────────────
-function CommissionTab({data,totComm,generatePDF}){
+function calcFIFOCommission(tradingSales,tradingPayments){
+  const customerMap={};
+  tradingSales.forEach(s=>{
+    const cid=s.customerName;
+    if(!customerMap[cid])customerMap[cid]={sales:[],totalPaid:0};
+    customerMap[cid].sales.push({...s});
+  });
+  tradingPayments.forEach(p=>{
+    const cid=p.customerName;
+    if(!customerMap[cid])customerMap[cid]={sales:[],totalPaid:0};
+    customerMap[cid].totalPaid+=+p.amount||0;
+  });
+  let totalCommission=0;
+  const commDetails=[];
   const commByCustomer={};
-  data.tradingPayments.forEach(p=>{if(!commByCustomer[p.customerName])commByCustomer[p.customerName]={name:p.customerName,commission:0,payments:0};commByCustomer[p.customerName].commission+=+p.commissionEarned||0;commByCustomer[p.customerName].payments+=+p.amount||0;});
-  const commList=Object.values(commByCustomer).filter(v=>v.commission>0).sort((a,b)=>b.commission-a.commission);
-  const doPDF=()=>{const rows=commList.map(v=>`<tr><td>${v.name}</td><td style="text-align:right">₹${fmt(v.payments)}</td><td style="text-align:right;color:#8E44AD;font-weight:bold">₹${fmt(v.commission)}</td></tr>`).join("");generatePDF("Commission Statement",`<table><thead><tr><th>Customer</th><th>Payment Received</th><th>Commission Earned</th></tr></thead><tbody>${rows}<tr class="tot"><td>TOTAL</td><td></td><td>₹${fmt(totComm)}</td></tr></tbody></table>`);};
+  Object.entries(customerMap).forEach(([cname,cdata])=>{
+    const sales=[...cdata.sales].sort((a,b)=>new Date(a.date)-new Date(b.date));
+    let remainingPayment=cdata.totalPaid;
+    sales.forEach(sale=>{
+      const saleAmt=+sale.amount||0;
+      const qty=+sale.meters||+sale.qty||0;
+      if(remainingPayment>=saleAmt&&saleAmt>0){
+        remainingPayment-=saleAmt;
+        const comm=qty*1.5;
+        if(comm>0){
+          totalCommission+=comm;
+          commDetails.push({customer:cname,date:sale.date,billNo:sale.billNo||"—",qty,amount:saleAmt,commission:comm});
+          if(!commByCustomer[cname])commByCustomer[cname]={name:cname,commission:0,bills:0,meters:0};
+          commByCustomer[cname].commission+=comm;
+          commByCustomer[cname].bills+=1;
+          commByCustomer[cname].meters+=qty;
+        }
+      }
+    });
+  });
+  return{totalCommission,commDetails,commByCustomer};
+}
+
+function CommissionTab({data,generatePDF}){
+  const[view,setView]=useState("summary");
+  const{totalCommission,commDetails,commByCustomer}=calcFIFOCommission(data.tradingSales,data.tradingPayments);
+  const commList=Object.values(commByCustomer).sort((a,b)=>b.commission-a.commission);
+  const detailList=[...commDetails].sort((a,b)=>new Date(b.date)-new Date(a.date));
+
+  const doPDF=()=>{
+    if(view==="summary"){
+      const rows=commList.map(v=>`<tr><td>${v.name}</td><td style="text-align:right">${v.bills}</td><td style="text-align:right">${fmt(v.meters)} m</td><td style="text-align:right;color:#8E44AD;font-weight:bold">₹${fmt(v.commission)}</td></tr>`).join("");
+      generatePDF("Commission Statement — Summary",`<table><thead><tr><th>Customer</th><th>Bills Adjusted</th><th>Meters</th><th>Commission</th></tr></thead><tbody>${rows}<tr class="tot"><td colspan="3">TOTAL</td><td>₹${fmt(totalCommission)}</td></tr></tbody></table>`);
+    } else {
+      const rows=detailList.map(v=>`<tr><td>${fmtD(v.date)}</td><td>${v.billNo}</td><td>${v.customer}</td><td style="text-align:right">${fmt(v.qty)} m</td><td style="text-align:right">₹${fmt(v.amount)}</td><td style="text-align:right;color:#8E44AD;font-weight:bold">₹${fmt(v.commission)}</td></tr>`).join("");
+      generatePDF("Commission Statement — Bill-wise",`<table><thead><tr><th>Date</th><th>Bill No</th><th>Customer</th><th>Meters</th><th>Sale Amt</th><th>Commission</th></tr></thead><tbody>${rows}<tr class="tot"><td colspan="5">TOTAL</td><td>₹${fmt(totalCommission)}</td></tr></tbody></table>`);
+    }
+  };
+
   return(<div>
     <div style={{background:`linear-gradient(135deg,${C.navy},${C.navyMid})`,borderRadius:14,padding:"14px 16px",marginBottom:16,border:"1px solid rgba(232,201,126,0.25)"}}>
-      <div style={{fontSize:10.5,color:C.gold,textTransform:"uppercase",letterSpacing:1,fontWeight:700}}>Commission Earned on Payments</div>
-      <div style={{fontSize:28,fontWeight:900,color:C.gold}}>₹{fmt(totComm)}</div>
-      <div style={{fontSize:11,color:"rgba(255,255,255,0.4)",marginTop:2}}>Calculated at time of payment receipt</div>
+      <div style={{fontSize:10.5,color:C.gold,textTransform:"uppercase",letterSpacing:1,fontWeight:700}}>Commission Earned (FIFO — Fully Adjusted Bills)</div>
+      <div style={{fontSize:28,fontWeight:900,color:C.gold}}>₹{fmt(totalCommission)}</div>
+      <div style={{fontSize:11,color:"rgba(255,255,255,0.5)",marginTop:2}}>Only fully paid bills counted @ ₹1.5/meter</div>
     </div>
-    <div style={{display:"flex",gap:8,marginBottom:12}}>
-      <button onClick={()=>exportCSV([["Customer","Payment Received","Commission"],...commList.map(v=>[v.name,v.payments,v.commission])],`Commission_${today()}.csv`)} style={{background:C.green,color:"#fff",border:"none",borderRadius:9,padding:"9px 15px",fontSize:12.5,fontWeight:700,cursor:"pointer",minHeight:40}}>Export CSV</button>
+    <div style={{display:"flex",gap:8,marginBottom:12,flexWrap:"wrap"}}>
+      <button onClick={()=>exportCSV([["Customer","Bills Adjusted","Meters","Commission"],...commList.map(v=>[v.name,v.bills,v.meters,v.commission])],`Commission_${today()}.csv`)} style={{background:C.green,color:"#fff",border:"none",borderRadius:9,padding:"9px 15px",fontSize:12.5,fontWeight:700,cursor:"pointer",minHeight:40}}>Export CSV</button>
       <button onClick={doPDF} style={{background:C.red,color:"#fff",border:"none",borderRadius:9,padding:"9px 15px",fontSize:12.5,fontWeight:700,cursor:"pointer",minHeight:40}}>PDF</button>
     </div>
-    {commList.length===0&&<Empty text="No commission yet. Commission is calculated on payments received."/>}
-    {commList.map((v,i)=>(<div key={v.name} style={{background:i%2===0?C.card:"#F8FAFC",borderRadius:12,padding:"12px 14px",marginBottom:8,boxShadow:"0 1px 6px rgba(0,0,0,0.05)",borderLeft:`3px solid ${C.purple}`}}><Row><div><B style={{fontSize:13.5}}>{v.name}</B><Mute>Payment: ₹{fmt(v.payments)}</Mute></div><span style={{fontWeight:900,color:C.purple,fontSize:15}}>₹{fmt(v.commission)}</span></Row></div>))}
-    <div style={{background:C.navy,borderRadius:12,padding:"14px 16px",marginTop:8,display:"flex",justifyContent:"space-between"}}><span style={{fontWeight:700,color:C.gold}}>TOTAL COMMISSION</span><span style={{fontWeight:900,fontSize:16,color:C.gold}}>₹{fmt(totComm)}</span></div>
+    <SegCtrl options={[{v:"summary",l:"Customer Summary"},{v:"bills",l:"Bill-wise Detail"}]} val={view} onChange={setView}/>
+    <div style={{marginTop:12}}>
+    {view==="summary"&&<>
+      {commList.length===0&&<Empty text="No commission yet. Commission is calculated on fully paid bills (FIFO)."/>}
+      {commList.map((v,i)=>(<div key={v.name} style={{background:i%2===0?C.card:"#F8FAFC",borderRadius:12,padding:"12px 14px",marginBottom:8,boxShadow:"0 1px 6px rgba(0,0,0,0.05)",borderLeft:`3px solid ${C.purple}`}}>
+        <Row>
+          <div><B style={{fontSize:13.5}}>{v.name}</B><Mute>{v.bills} bills · {fmt(v.meters)} mtrs</Mute></div>
+          <span style={{fontWeight:900,color:C.purple,fontSize:15}}>₹{fmt(v.commission)}</span>
+        </Row>
+      </div>))}
+      <div style={{background:C.navy,borderRadius:12,padding:"14px 16px",marginTop:8,display:"flex",justifyContent:"space-between"}}><span style={{fontWeight:700,color:C.gold}}>TOTAL COMMISSION</span><span style={{fontWeight:900,fontSize:16,color:C.gold}}>₹{fmt(totalCommission)}</span></div>
+    </>}
+    {view==="bills"&&<>
+      {detailList.length===0&&<Empty text="No fully adjusted bills found."/>}
+      {detailList.map((v,i)=>(<div key={i} style={{background:i%2===0?C.card:"#F8FAFC",borderRadius:12,padding:"12px 14px",marginBottom:8,boxShadow:"0 1px 6px rgba(0,0,0,0.05)",borderLeft:`3px solid ${C.purple}`}}>
+        <Row><B style={{fontSize:13}}>{v.customer}</B><span style={{fontWeight:900,color:C.purple}}>₹{fmt(v.commission)}</span></Row>
+        <Mute>Bill No: {v.billNo} · {fmtD(v.date)}</Mute>
+        <Mute>{fmt(v.qty)} m × ₹1.5 · Sale: ₹{fmt(v.amount)}</Mute>
+      </div>))}
+      <div style={{background:C.navy,borderRadius:12,padding:"14px 16px",marginTop:8,display:"flex",justifyContent:"space-between"}}><span style={{fontWeight:700,color:C.gold}}>TOTAL COMMISSION</span><span style={{fontWeight:900,fontSize:16,color:C.gold}}>₹{fmt(totalCommission)}</span></div>
+    </>}
+    </div>
   </div>);
 }
 
@@ -488,6 +589,7 @@ function MastersTab({data,onAdd,onDel,onEdit,onImportExcel}){
       {data.customers.map(c=>(<div key={c.id} style={{background:C.card,borderRadius:13,padding:"13px 15px",marginBottom:10,boxShadow:"0 1px 8px rgba(0,0,0,0.06)"}}>
         <Row><B>{c.name}</B><span style={{fontSize:11,background:"#F0F4F8",padding:"3px 9px",borderRadius:10,color:C.muted,fontWeight:600}}>{c.type}</span></Row>
         {c.phone&&<Mute>{c.phone}</Mute>}{c.city&&<Mute>{c.city}</Mute>}{c.gstin&&<Mute>GST: {c.gstin}</Mute>}
+        <Mute>Credit Days: {c.creditDays||"30"} days</Mute>
         <div style={{display:"flex",gap:8,marginTop:10}}>
           <button onClick={()=>onEdit("customer",c)} style={{background:"#EAF4FC",color:C.blue,border:"none",borderRadius:8,padding:"7px 14px",fontSize:12,fontWeight:700,cursor:"pointer"}}>Edit</button>
           <button onClick={()=>onDel("customers",c.id)} style={{background:"#FEE8E8",color:C.red,border:"none",borderRadius:8,padding:"7px 14px",fontSize:12,fontWeight:700,cursor:"pointer"}}>Delete</button>
@@ -631,7 +733,7 @@ function CreditModal({data,onSave,onClose}){
 }
 
 function CustomerModal({onSave,onClose,initial}){
-  const[f,sf]=useState(initial||{name:"",type:"Trading",phone:"",city:"",gstin:""});
+  const[f,sf]=useState(initial||{name:"",type:"Trading",phone:"",city:"",gstin:"",creditDays:"30"});
   const s=(k,v)=>sf(p=>({...p,[k]:v}));
   return(<ModalBase title={initial?"Edit Customer":"Add Customer"} onClose={onClose}>
     <F label="Name *"><input value={f.name} onChange={e=>s("name",e.target.value)} placeholder="Customer name" style={IS}/></F>
@@ -639,6 +741,16 @@ function CustomerModal({onSave,onClose,initial}){
     <F label="Phone"><input type="tel" value={f.phone} onChange={e=>s("phone",e.target.value)} placeholder="10-digit mobile" style={IS}/></F>
     <F label="City"><input value={f.city} onChange={e=>s("city",e.target.value)} placeholder="City" style={IS}/></F>
     <F label="GSTIN"><input value={f.gstin} onChange={e=>s("gstin",e.target.value)} placeholder="GST number" style={IS}/></F>
+    <F label="Credit Days (for ageing follow-up)">
+      <select value={f.creditDays||"30"} onChange={e=>s("creditDays",e.target.value)} style={IS}>
+        <option value="0">0 Days (Immediate)</option>
+        <option value="15">15 Days</option>
+        <option value="30">30 Days</option>
+        <option value="45">45 Days</option>
+        <option value="60">60 Days</option>
+        <option value="90">90 Days</option>
+      </select>
+    </F>
     <SaveBtn color={C.navy} onClick={()=>{if(!f.name)return alert("Name required");onSave(f);}}>Save Customer</SaveBtn>
   </ModalBase>);
 }
