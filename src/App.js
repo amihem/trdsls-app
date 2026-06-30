@@ -15,6 +15,13 @@ function excelDateToJS(v){if(v instanceof Date)return v;if(typeof v==="number")r
 function exportBackup(data){const b=new Blob([JSON.stringify(data,null,2)],{type:"application/json"});const a=document.createElement("a");a.href=URL.createObjectURL(b);a.download=`FabricSales_${today()}.json`;a.click();}
 function exportCSV(rows,fn){const csv=rows.map(r=>r.map(c=>`"${String(c||"").replace(/"/g,'""')}"`).join(",")).join("\n");const b=new Blob(["\uFEFF"+csv],{type:"text/csv"});const a=document.createElement("a");a.href=URL.createObjectURL(b);a.download=fn;a.click();}
 
+// ── Financial Year helpers ────────────────────────────────────────
+function getFY(dateStr){const d=new Date(dateStr);const y=d.getFullYear();const m=d.getMonth();return m>=3?`${y}-${String(y+1).slice(2)}`:`${y-1}-${String(y).slice(2)}`;}
+function getFYRange(fy){const[startY]=fy.split("-");const y=parseInt(startY);return{start:new Date(y,3,1),end:new Date(y+1,2,31,23,59,59)};}
+const ALL_FY="All Years";
+function getAvailableFYs(sales){const s=new Set(sales.map(s=>getFY(s.date)));return[ALL_FY,...[...s].sort().reverse()];}
+function filterByFY(sales,fy){if(fy===ALL_FY)return sales;const{start,end}=getFYRange(fy);return sales.filter(s=>{const d=new Date(s.date);return d>=start&&d<=end;});}
+
 const C={navy:"#0F1923",navyMid:"#1A3A5C",gold:"#E8C97E",blue:"#2980B9",green:"#27AE60",red:"#E74C3C",orange:"#E67E22",purple:"#8E44AD",teal:"#16A085",bg:"#F0F4F8",card:"#FFFFFF",border:"#E2EAF4",muted:"#7A8A9A"};
 
 const Row=({children,style})=><div style={{display:"flex",justifyContent:"space-between",alignItems:"center",...style}}>{children}</div>;
@@ -342,7 +349,7 @@ function OutstandingTab({tradingOut,data,onAddPay,generatePDF}){
       if(left>0){
         const days=Math.floor((todayMs-new Date(s.date).setHours(0,0,0,0))/86400000);
         if(days>maxDays){maxDays=days;oldestBill=s.billNo;oldestDate=s.date;}
-        openBills.push({billNo:s.billNo||"—",date:s.date,outstanding:left,days});
+        openBills.push({billNo:s.billNo||"—",date:s.date,outstanding:left,days,billAmount:amt,productName:s.productName||"",meters:+s.meters||0,rate:+s.rate||0});
       }
     });
     return{...v,net,maxDays,oldestBill,oldestDate,openBills};
@@ -351,8 +358,27 @@ function OutstandingTab({tradingOut,data,onAddPay,generatePDF}){
   const total=entries.reduce((a,v)=>a+v.net,0);
 
   const buildWA=(v)=>{
-    const billLines=v.openBills.map(b=>`Bill Date    : ${fmtD(b.date)}\nBill No.     : ${b.billNo}\nOutstanding  : Rs. ${fmt(b.outstanding)}\nDays         : ${b.days} Days\n`).join("\n");
-    return `*Amihem Sales*\nDate: ${new Date().toLocaleDateString("en-IN")}\n\nDear ${v.name},\n\nThis is a gentle reminder regarding your outstanding payment:\n\n${billLines}\n*Total Outstanding : Rs. ${fmt(v.net)}*\n\nKindly arrange the payment at your earliest convenience.\n\nRegards,\nAmihem Sales`;
+    const dateStr=new Date().toLocaleDateString("en-IN",{day:"2-digit",month:"short",year:"numeric"});
+    const fmtAmt=(n)=>Math.round(n).toLocaleString("en-IN");
+    const fmtBillDate=(d)=>{
+      const dt=new Date(d);
+      const months=["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+      return `${String(dt.getDate()).padStart(2,"0")}-${months[dt.getMonth()]}-${String(dt.getFullYear()).slice(2)}`;
+    };
+    const divider="━━━━━━━━━━━━━━━━━━━━━━━━━";
+    const billLines=v.openBills.map((b,i)=>{
+      const credit=Math.round(Math.max(0,(b.billAmount||b.outstanding)-b.outstanding));
+      const bucketShort=b.days<=30?"0-30d":b.days<=60?"31-60d":b.days<=90?"61-90d":b.days<=120?"91-120d":"120+d";
+      const billNoClean=b.billNo==="—"?"—":String(b.billNo).replace(/IMP-/i,"");
+      return `📌 *Bill ${i+1}*\n`+
+        `   Date    : ${fmtBillDate(b.date)}\n`+
+        `   Bill No : ${billNoClean}\n`+
+        `   Amt     : ₹${fmtAmt(b.billAmount||b.outstanding)}\n`+
+        (credit>0?`   Credit  : ₹${fmtAmt(credit)}\n`:"")+
+        `   O/S     : ₹${fmtAmt(b.outstanding)}\n`+
+        `   Ageing  : ${b.days} Days (${bucketShort})`;
+    }).join("\n\n");
+    return `🏢 *Navkar Fabrics*\n📅 ${dateStr}\n${divider}\n\nDear *${v.name}*,\n\nYour outstanding details:\n\n${billLines}\n\n${divider}\n💰 *Total O/S : ₹${fmt(v.net)}*\n${divider}\n\nPlease arrange payment at the earliest.\n\nThank You 🙏\n*Navkar Fabrics*`;
   };
 
   const doPDF=()=>{
@@ -384,16 +410,20 @@ function OutstandingTab({tradingOut,data,onAddPay,generatePDF}){
         </div>
         {isOpen&&<div style={{marginTop:12,paddingTop:10,borderTop:`1px solid ${C.border}`}}>
           <div style={{fontWeight:700,fontSize:12.5,color:C.navy,marginBottom:8}}>Bill-wise Outstanding</div>
-          {v.openBills.map((b,i)=>{const bb=ageBucket(b.days);return(<div key={i} style={{background:"#F7F9FC",borderRadius:10,padding:"10px 12px",marginBottom:8,borderLeft:`3px solid ${bb.color}`}}>
-            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
-              <div>
-                <div style={{fontSize:13,fontWeight:700,color:C.navy}}>Bill No. : {b.billNo}</div>
-                <div style={{fontSize:12,color:C.muted,marginTop:2}}>Bill Date : {fmtD(b.date)}</div>
-                <div style={{fontSize:12,color:C.muted}}>Days : <b style={{color:bb.color}}>{b.days} Days</b></div>
+          {v.openBills.map((b,i)=>{const bb=ageBucket(b.days);const credit=Math.max(0,(b.billAmount||b.outstanding)-b.outstanding);return(<div key={i} style={{background:"#F7F9FC",borderRadius:10,padding:"12px 13px",marginBottom:8,borderLeft:`3px solid ${bb.color}`}}>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start"}}>
+              <div style={{flex:1}}>
+                <div style={{fontSize:13,fontWeight:800,color:C.navy}}>Bill No. : {b.billNo}</div>
+                <div style={{fontSize:11.5,color:C.muted,marginTop:3}}>Bill Date : {fmtD(b.date)}</div>
+                {b.productName&&<div style={{fontSize:11.5,color:C.teal,marginTop:2}}>📦 {b.productName}</div>}
+                {b.meters>0&&<div style={{fontSize:11.5,color:C.muted}}>Qty : {fmt(b.meters)} m {b.rate>0?`@ ₹${fmt(b.rate)}/m`:""}</div>}
+                <div style={{fontSize:11.5,color:C.muted,marginTop:2}}>Bill Amt : <b style={{color:C.blue}}>₹{fmt(b.billAmount||b.outstanding)}</b></div>
+                {credit>0&&<div style={{fontSize:11.5,color:C.muted}}>Credit : <b style={{color:C.green}}>₹{fmt(credit)}</b></div>}
+                <div style={{fontSize:11.5,color:bb.color,fontWeight:700,marginTop:3}}>⏱ {b.days} Days · {bb.label}</div>
               </div>
-              <div style={{textAlign:"right"}}>
-                <div style={{fontWeight:900,fontSize:15,color:C.red}}>₹{fmt(b.outstanding)}</div>
-                <div style={{fontSize:10,color:bb.color,fontWeight:700}}>{bb.label}</div>
+              <div style={{textAlign:"right",minWidth:90}}>
+                <div style={{fontWeight:900,fontSize:16,color:C.red}}>₹{fmt(b.outstanding)}</div>
+                <div style={{fontSize:10,color:C.muted,marginTop:2}}>Outstanding</div>
               </div>
             </div>
           </div>);})}
@@ -465,20 +495,197 @@ function AgingTab({data,generatePDF}){
 
 // ─── ANALYTICS TAB ───────────────────────────────────────────────
 function AnalyticsTab({data,tradingOut}){
-  const[chartType,setChartType]=useState("bar");
-  const monthly=useMemo(()=>{const map={};data.tradingSales.forEach(s=>{const d=new Date(s.date);const key=`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`;const label=d.toLocaleDateString("en-IN",{month:"short",year:"2-digit"});if(!map[key])map[key]={key,label,amount:0};map[key].amount+=+s.amount||0;});return Object.values(map).sort((a,b)=>a.key.localeCompare(b.key)).slice(-12);},[data]);
-  const products=useMemo(()=>{const map={};data.tradingSales.forEach(s=>{const p=s.productName||"Unknown";if(!map[p])map[p]={name:p,value:0};map[p].value+=+s.amount||0;});return Object.values(map).sort((a,b)=>b.value-a.value).slice(0,7);},[data]);
-  const customers=Object.values(tradingOut).map(v=>({name:v.name.length>14?v.name.slice(0,14)+"…":v.name,sales:v.due,outstanding:Math.max(0,v.due+(v.debit||0)-v.paid-(v.credit||0))})).sort((a,b)=>b.sales-a.sales).slice(0,8);
+  const[chartType,setChartType]=useState("monthly");
+  const[fy,setFY]=useState(ALL_FY);
+  const allFYs=useMemo(()=>getAvailableFYs(data.tradingSales),[data]);
+  const filtered=useMemo(()=>filterByFY(data.tradingSales,fy),[data,fy]);
+  const filteredPay=useMemo(()=>{
+    if(fy===ALL_FY)return data.tradingPayments;
+    const{start,end}=getFYRange(fy);
+    return data.tradingPayments.filter(p=>{const d=new Date(p.date);return d>=start&&d<=end;});
+  },[data,fy]);
   const PIE=[C.blue,C.green,C.orange,C.purple,C.teal,C.red,"#F39C12","#1ABC9C"];
+
+  // Monthly sales for selected FY
+  const monthly=useMemo(()=>{
+    const map={};
+    filtered.forEach(s=>{
+      const d=new Date(s.date);
+      const key=`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`;
+      const label=d.toLocaleDateString("en-IN",{month:"short",year:"2-digit"});
+      if(!map[key])map[key]={key,label,sales:0,payments:0};
+      map[key].sales+=+s.amount||0;
+    });
+    filteredPay.forEach(p=>{
+      const d=new Date(p.date);
+      const key=`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`;
+      if(map[key])map[key].payments+=+p.amount||0;
+    });
+    return Object.values(map).sort((a,b)=>a.key.localeCompare(b.key));
+  },[filtered,filteredPay]);
+
+  // YoY comparison — all 4 FYs, April–March
+  const yoy=useMemo(()=>{
+    const months=["Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec","Jan","Feb","Mar"];
+    const fyList=allFYs.filter(f=>f!==ALL_FY).slice(0,4).reverse();
+    const map={};
+    data.tradingSales.forEach(s=>{
+      const f=getFY(s.date);if(!fyList.includes(f))return;
+      const d=new Date(s.date);
+      const mIdx=(d.getMonth()+9)%12;// Apr=0
+      const label=months[mIdx];
+      if(!map[label])map[label]={label};
+      map[label][f]=(map[label][f]||0)+(+s.amount||0);
+    });
+    return months.map(m=>map[m]||{label:m});
+  },[data,allFYs]);
+
+  // Top customers for selected FY
+  const topCustomers=useMemo(()=>{
+    const map={};
+    filtered.forEach(s=>{if(!map[s.customerName])map[s.customerName]={name:s.customerName.length>16?s.customerName.slice(0,16)+"…":s.customerName,sales:0};map[s.customerName].sales+=+s.amount||0;});
+    return Object.values(map).sort((a,b)=>b.sales-a.sales).slice(0,8);
+  },[filtered]);
+
+  // Products for selected FY
+  const products=useMemo(()=>{
+    const map={};
+    filtered.forEach(s=>{const p=s.productName||"Unknown";if(!map[p])map[p]={name:p.length>16?p.slice(0,16)+"…":p,value:0};map[p].value+=+s.amount||0;});
+    return Object.values(map).sort((a,b)=>b.value-a.value).slice(0,7);
+  },[filtered]);
+
+  // FY summary cards
+  const fySummary=useMemo(()=>{
+    const fyList=allFYs.filter(f=>f!==ALL_FY);
+    return fyList.map(f=>{
+      const sales=filterByFY(data.tradingSales,f).reduce((a,s)=>a+(+s.amount||0),0);
+      const {start,end}=getFYRange(f);
+      const pays=data.tradingPayments.filter(p=>{const d=new Date(p.date);return d>=start&&d<=end;}).reduce((a,p)=>a+(+p.amount||0),0);
+      return{fy:f,sales,pays,outstanding:Math.max(0,sales-pays)};
+    });
+  },[data,allFYs]);
+
+  const fyColors=["#2980B9","#27AE60","#E67E22","#8E44AD"];
+  const fyList=allFYs.filter(f=>f!==ALL_FY).slice(0,4).reverse();
+
+  const totSales=filtered.reduce((a,s)=>a+(+s.amount||0),0);
+  const totPays=filteredPay.reduce((a,p)=>a+(+p.amount||0),0);
+
   return(<div>
-    <div style={{display:"flex",gap:8,marginBottom:16,flexWrap:"wrap"}}>
-      {[{v:"bar",l:"Monthly"},{v:"line",l:"Trend"},{v:"pie",l:"Product"},{v:"customer",l:"Customer"}].map(ct=>(<button key={ct.v} onClick={()=>setChartType(ct.v)} style={{flex:"0 0 auto",padding:"9px 14px",borderRadius:20,fontSize:12.5,fontWeight:chartType===ct.v?700:500,border:`1.5px solid ${chartType===ct.v?C.navy:C.border}`,background:chartType===ct.v?C.navy:"#fff",color:chartType===ct.v?C.gold:"#666",cursor:"pointer",minHeight:40}}>{ct.l}</button>))}
+    {/* FY Selector */}
+    <div style={{marginBottom:14}}>
+      <div style={{fontSize:11,color:C.muted,fontWeight:600,marginBottom:6,textTransform:"uppercase",letterSpacing:0.5}}>Financial Year</div>
+      <div style={{display:"flex",overflowX:"auto",gap:6,scrollbarWidth:"none",paddingBottom:2}}>
+        {allFYs.map(f=>(
+          <button key={f} onClick={()=>setFY(f)} style={{flex:"0 0 auto",padding:"8px 14px",borderRadius:20,fontSize:12,fontWeight:fy===f?700:500,border:`1.5px solid ${fy===f?C.navy:C.border}`,background:fy===f?C.navy:"#fff",color:fy===f?C.gold:"#666",cursor:"pointer",whiteSpace:"nowrap"}}>
+            {f===ALL_FY?"📊 All Years":`FY ${f}`}
+          </button>
+        ))}
+      </div>
     </div>
+
+    {/* KPI Strip */}
+    <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:14}}>
+      <div style={{background:C.card,borderRadius:12,padding:"12px 14px",borderLeft:`4px solid ${C.blue}`}}>
+        <div style={{fontSize:10,color:C.muted,fontWeight:600,textTransform:"uppercase"}}>Sales {fy===ALL_FY?"(All)":fy}</div>
+        <div style={{fontSize:18,fontWeight:900,color:C.blue,marginTop:2}}>₹{totSales>=10000000?`${(totSales/10000000).toFixed(2)}Cr`:totSales>=100000?`${(totSales/100000).toFixed(1)}L`:fmt(totSales)}</div>
+      </div>
+      <div style={{background:C.card,borderRadius:12,padding:"12px 14px",borderLeft:`4px solid ${C.green}`}}>
+        <div style={{fontSize:10,color:C.muted,fontWeight:600,textTransform:"uppercase"}}>Collected</div>
+        <div style={{fontSize:18,fontWeight:900,color:C.green,marginTop:2}}>₹{totPays>=10000000?`${(totPays/10000000).toFixed(2)}Cr`:totPays>=100000?`${(totPays/100000).toFixed(1)}L`:fmt(totPays)}</div>
+      </div>
+    </div>
+
+    {/* Chart Type Selector */}
+    <div style={{display:"flex",overflowX:"auto",gap:6,marginBottom:12,scrollbarWidth:"none"}}>
+      {[{v:"monthly",l:"📅 Monthly"},{v:"yoy",l:"📊 Year-on-Year"},{v:"customer",l:"👥 Customers"},{v:"product",l:"📦 Products"},{v:"fycompare",l:"📈 FY Summary"}].map(ct=>(
+        <button key={ct.v} onClick={()=>setChartType(ct.v)} style={{flex:"0 0 auto",padding:"9px 13px",borderRadius:20,fontSize:12,fontWeight:chartType===ct.v?700:500,border:`1.5px solid ${chartType===ct.v?C.navy:C.border}`,background:chartType===ct.v?C.navy:"#fff",color:chartType===ct.v?C.gold:"#666",cursor:"pointer",whiteSpace:"nowrap",minHeight:38}}>{ct.l}</button>
+      ))}
+    </div>
+
     <div style={{background:C.card,borderRadius:14,padding:16,boxShadow:"0 1px 8px rgba(0,0,0,0.06)"}}>
-      {chartType==="bar"&&<><div style={{fontWeight:700,fontSize:14,color:C.navy,marginBottom:16}}>Monthly Sales</div>{monthly.length===0?<Empty text="No data."/>:<ResponsiveContainer width="100%" height={240}><BarChart data={monthly} margin={{top:4,right:8,left:0,bottom:4}}><CartesianGrid strokeDasharray="3 3" stroke="#F0F4F8"/><XAxis dataKey="label" tick={{fontSize:10}} tickLine={false}/><YAxis tickFormatter={v=>v>=100000?`₹${(v/100000).toFixed(1)}L`:`₹${(v/1000).toFixed(0)}K`} tick={{fontSize:10}} tickLine={false} axisLine={false}/><Tooltip formatter={v=>`₹${fmt(v)}`}/><Bar dataKey="amount" fill={C.blue} radius={[5,5,0,0]} name="Sales"/></BarChart></ResponsiveContainer>}</>}
-      {chartType==="line"&&<><div style={{fontWeight:700,fontSize:14,color:C.navy,marginBottom:16}}>Sales Trend</div>{monthly.length===0?<Empty text="No data."/>:<ResponsiveContainer width="100%" height={240}><LineChart data={monthly} margin={{top:4,right:8,left:0,bottom:4}}><CartesianGrid strokeDasharray="3 3" stroke="#F0F4F8"/><XAxis dataKey="label" tick={{fontSize:10}} tickLine={false}/><YAxis tickFormatter={v=>v>=100000?`₹${(v/100000).toFixed(1)}L`:`₹${(v/1000).toFixed(0)}K`} tick={{fontSize:10}} tickLine={false} axisLine={false}/><Tooltip formatter={v=>`₹${fmt(v)}`}/><Line type="monotone" dataKey="amount" stroke={C.blue} strokeWidth={2.5} dot={{r:4,fill:C.blue}} name="Sales"/></LineChart></ResponsiveContainer>}</>}
-      {chartType==="pie"&&<><div style={{fontWeight:700,fontSize:14,color:C.navy,marginBottom:16}}>Sales by Product</div>{products.length===0?<Empty text="No data."/>:<ResponsiveContainer width="100%" height={240}><PieChart><Pie data={products} cx="50%" cy="50%" outerRadius={90} dataKey="value" nameKey="name" label={({name,percent})=>`${name} ${(percent*100).toFixed(0)}%`} labelLine={false} fontSize={10}>{products.map((_,i)=><Cell key={i} fill={PIE[i%PIE.length]}/>)}</Pie><Tooltip formatter={v=>`₹${fmt(v)}`}/></PieChart></ResponsiveContainer>}</>}
-      {chartType==="customer"&&<><div style={{fontWeight:700,fontSize:14,color:C.navy,marginBottom:16}}>Top Customers</div>{customers.length===0?<Empty text="No data."/>:<ResponsiveContainer width="100%" height={280}><BarChart data={customers} layout="vertical" margin={{top:0,right:8,left:60,bottom:0}}><CartesianGrid strokeDasharray="3 3" stroke="#F0F4F8" horizontal={false}/><XAxis type="number" tickFormatter={v=>v>=100000?`₹${(v/100000).toFixed(1)}L`:`₹${(v/1000).toFixed(0)}K`} tick={{fontSize:9}} tickLine={false}/><YAxis type="category" dataKey="name" tick={{fontSize:10}} width={60} tickLine={false} axisLine={false}/><Tooltip formatter={v=>`₹${fmt(v)}`}/><Legend iconSize={10} wrapperStyle={{fontSize:11}}/><Bar dataKey="sales" fill={C.blue} radius={[0,4,4,0]} name="Sales" barSize={10}/><Bar dataKey="outstanding" fill={C.red} radius={[0,4,4,0]} name="Outstanding" barSize={10}/></BarChart></ResponsiveContainer>}</>}
+      {chartType==="monthly"&&<>
+        <div style={{fontWeight:700,fontSize:14,color:C.navy,marginBottom:4}}>Monthly Sales {fy!==ALL_FY?`— FY ${fy}`:""}</div>
+        <div style={{fontSize:11,color:C.muted,marginBottom:14}}>Sales vs Collections per month</div>
+        {monthly.length===0?<Empty text="No data for selected year."/>:
+        <ResponsiveContainer width="100%" height={260}>
+          <BarChart data={monthly} margin={{top:4,right:4,left:0,bottom:4}}>
+            <CartesianGrid strokeDasharray="3 3" stroke="#F0F4F8"/>
+            <XAxis dataKey="label" tick={{fontSize:10}} tickLine={false}/>
+            <YAxis tickFormatter={v=>v>=100000?`₹${(v/100000).toFixed(0)}L`:`₹${(v/1000).toFixed(0)}K`} tick={{fontSize:10}} tickLine={false} axisLine={false}/>
+            <Tooltip formatter={v=>`₹${fmt(v)}`}/>
+            <Legend iconSize={10} wrapperStyle={{fontSize:11}}/>
+            <Bar dataKey="sales" fill={C.blue} radius={[4,4,0,0]} name="Sales" barSize={14}/>
+            <Bar dataKey="payments" fill={C.green} radius={[4,4,0,0]} name="Collections" barSize={14}/>
+          </BarChart>
+        </ResponsiveContainer>}
+      </>}
+
+      {chartType==="yoy"&&<>
+        <div style={{fontWeight:700,fontSize:14,color:C.navy,marginBottom:4}}>Year-on-Year Comparison</div>
+        <div style={{fontSize:11,color:C.muted,marginBottom:14}}>All financial years — April to March</div>
+        {yoy.length===0?<Empty text="No data."/>:
+        <ResponsiveContainer width="100%" height={280}>
+          <BarChart data={yoy} margin={{top:4,right:4,left:0,bottom:4}}>
+            <CartesianGrid strokeDasharray="3 3" stroke="#F0F4F8"/>
+            <XAxis dataKey="label" tick={{fontSize:10}} tickLine={false}/>
+            <YAxis tickFormatter={v=>v>=100000?`₹${(v/100000).toFixed(0)}L`:`₹${(v/1000).toFixed(0)}K`} tick={{fontSize:10}} tickLine={false} axisLine={false}/>
+            <Tooltip formatter={v=>`₹${fmt(v)}`}/>
+            <Legend iconSize={10} wrapperStyle={{fontSize:11}}/>
+            {fyList.map((f,i)=><Bar key={f} dataKey={f} fill={fyColors[i%fyColors.length]} radius={[3,3,0,0]} name={`FY ${f}`} barSize={8}/>)}
+          </BarChart>
+        </ResponsiveContainer>}
+      </>}
+
+      {chartType==="customer"&&<>
+        <div style={{fontWeight:700,fontSize:14,color:C.navy,marginBottom:4}}>Top Customers {fy!==ALL_FY?`— FY ${fy}`:""}</div>
+        <div style={{fontSize:11,color:C.muted,marginBottom:14}}>By sales volume</div>
+        {topCustomers.length===0?<Empty text="No data."/>:
+        <ResponsiveContainer width="100%" height={300}>
+          <BarChart data={topCustomers} layout="vertical" margin={{top:0,right:8,left:70,bottom:0}}>
+            <CartesianGrid strokeDasharray="3 3" stroke="#F0F4F8" horizontal={false}/>
+            <XAxis type="number" tickFormatter={v=>v>=100000?`₹${(v/100000).toFixed(0)}L`:`₹${(v/1000).toFixed(0)}K`} tick={{fontSize:9}} tickLine={false}/>
+            <YAxis type="category" dataKey="name" tick={{fontSize:10}} width={70} tickLine={false} axisLine={false}/>
+            <Tooltip formatter={v=>`₹${fmt(v)}`}/>
+            <Bar dataKey="sales" fill={C.blue} radius={[0,5,5,0]} name="Sales" barSize={12}/>
+          </BarChart>
+        </ResponsiveContainer>}
+      </>}
+
+      {chartType==="product"&&<>
+        <div style={{fontWeight:700,fontSize:14,color:C.navy,marginBottom:4}}>Sales by Product {fy!==ALL_FY?`— FY ${fy}`:""}</div>
+        <div style={{fontSize:11,color:C.muted,marginBottom:14}}>Top 7 products by value</div>
+        {products.length===0?<Empty text="No data."/>:
+        <ResponsiveContainer width="100%" height={260}>
+          <PieChart>
+            <Pie data={products} cx="50%" cy="50%" outerRadius={95} innerRadius={40} dataKey="value" nameKey="name"
+              label={({name,percent})=>`${(percent*100).toFixed(0)}%`} labelLine={true} fontSize={10}>
+              {products.map((_,i)=><Cell key={i} fill={PIE[i%PIE.length]}/>)}
+            </Pie>
+            <Tooltip formatter={v=>`₹${fmt(v)}`}/>
+            <Legend iconSize={10} wrapperStyle={{fontSize:10}}/>
+          </PieChart>
+        </ResponsiveContainer>}
+      </>}
+
+      {chartType==="fycompare"&&<>
+        <div style={{fontWeight:700,fontSize:14,color:C.navy,marginBottom:4}}>Financial Year Summary</div>
+        <div style={{fontSize:11,color:C.muted,marginBottom:14}}>Sales vs Collections — all years</div>
+        {fySummary.map((f,i)=>(
+          <div key={f.fy} style={{background:"#F8FAFC",borderRadius:12,padding:"14px 15px",marginBottom:10,borderLeft:`4px solid ${fyColors[i%fyColors.length]}`}}>
+            <div style={{fontWeight:800,fontSize:14,color:C.navy,marginBottom:8}}>FY {f.fy}</div>
+            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8}}>
+              <div><div style={{fontSize:10,color:C.muted,fontWeight:600}}>SALES</div><div style={{fontSize:14,fontWeight:900,color:C.blue}}>₹{f.sales>=10000000?`${(f.sales/10000000).toFixed(2)}Cr`:f.sales>=100000?`${(f.sales/100000).toFixed(1)}L`:fmt(f.sales)}</div></div>
+              <div><div style={{fontSize:10,color:C.muted,fontWeight:600}}>COLLECTED</div><div style={{fontSize:14,fontWeight:900,color:C.green}}>₹{f.pays>=10000000?`${(f.pays/10000000).toFixed(2)}Cr`:f.pays>=100000?`${(f.pays/100000).toFixed(1)}L`:fmt(f.pays)}</div></div>
+              <div><div style={{fontSize:10,color:C.muted,fontWeight:600}}>O/S</div><div style={{fontSize:14,fontWeight:900,color:C.red}}>₹{f.outstanding>=100000?`${(f.outstanding/100000).toFixed(1)}L`:fmt(f.outstanding)}</div></div>
+            </div>
+            <div style={{marginTop:10,background:"#E8EDF2",borderRadius:5,height:6}}>
+              <div style={{width:`${Math.min(100,f.pays/f.sales*100)||0}%`,background:fyColors[i%fyColors.length],height:6,borderRadius:5}}/>
+            </div>
+            <div style={{fontSize:10,color:C.muted,marginTop:4}}>{f.sales>0?(f.pays/f.sales*100).toFixed(1):0}% collected</div>
+          </div>
+        ))}
+      </>}
     </div>
   </div>);
 }
@@ -527,47 +734,104 @@ function CommissionTab({data,generatePDF}){
   const{totalCommission,commDetails,commByCustomer}=calcFIFOCommission(data.tradingSales,data.tradingPayments);
   const commList=Object.values(commByCustomer).sort((a,b)=>b.commission-a.commission);
   const detailList=[...commDetails].sort((a,b)=>new Date(b.date)-new Date(a.date));
+  const totalBills=commList.reduce((a,v)=>a+v.bills,0);
+  const totalMeters=commList.reduce((a,v)=>a+v.meters,0);
+  const maxComm=commList[0]?.commission||1;
 
   const doPDF=()=>{
     if(view==="summary"){
-      const rows=commList.map(v=>`<tr><td>${v.name}</td><td style="text-align:right">${v.bills}</td><td style="text-align:right">${fmt(v.meters)} m</td><td style="text-align:right;color:#8E44AD;font-weight:bold">₹${fmt(v.commission)}</td></tr>`).join("");
-      generatePDF("Commission Statement — Summary",`<table><thead><tr><th>Customer</th><th>Bills Adjusted</th><th>Meters</th><th>Commission</th></tr></thead><tbody>${rows}<tr class="tot"><td colspan="3">TOTAL</td><td>₹${fmt(totalCommission)}</td></tr></tbody></table>`);
+      const rows=commList.map((v,i)=>`<tr><td>${i+1}</td><td>${v.name}</td><td style="text-align:right">${v.bills}</td><td style="text-align:right">${fmt(v.meters)} m</td><td style="text-align:right;color:#8E44AD;font-weight:bold">₹${fmt(v.commission)}</td></tr>`).join("");
+      generatePDF("Commission Statement — Customer Summary",`<table><thead><tr><th>#</th><th>Customer</th><th>Bills Adjusted</th><th>Meters</th><th>Commission</th></tr></thead><tbody>${rows}<tr class="tot"><td colspan="4">TOTAL</td><td>₹${fmt(totalCommission)}</td></tr></tbody></table>`);
     } else {
       const rows=detailList.map(v=>`<tr><td>${fmtD(v.date)}</td><td>${v.billNo}</td><td>${v.customer}</td><td style="text-align:right">${fmt(v.qty)} m</td><td style="text-align:right">₹${fmt(v.amount)}</td><td style="text-align:right;color:#8E44AD;font-weight:bold">₹${fmt(v.commission)}</td></tr>`).join("");
-      generatePDF("Commission Statement — Bill-wise",`<table><thead><tr><th>Date</th><th>Bill No</th><th>Customer</th><th>Meters</th><th>Sale Amt</th><th>Commission</th></tr></thead><tbody>${rows}<tr class="tot"><td colspan="5">TOTAL</td><td>₹${fmt(totalCommission)}</td></tr></tbody></table>`);
+      generatePDF("Commission Statement — Bill-wise Detail",`<table><thead><tr><th>Date</th><th>Bill No</th><th>Customer</th><th>Meters</th><th>Sale Amt</th><th>Commission</th></tr></thead><tbody>${rows}<tr class="tot"><td colspan="5">TOTAL</td><td>₹${fmt(totalCommission)}</td></tr></tbody></table>`);
     }
   };
 
   return(<div>
-    <div style={{background:`linear-gradient(135deg,${C.navy},${C.navyMid})`,borderRadius:14,padding:"14px 16px",marginBottom:16,border:"1px solid rgba(232,201,126,0.25)"}}>
-      <div style={{fontSize:10.5,color:C.gold,textTransform:"uppercase",letterSpacing:1,fontWeight:700}}>Commission Earned (FIFO — Fully Adjusted Bills)</div>
-      <div style={{fontSize:28,fontWeight:900,color:C.gold}}>₹{fmt(totalCommission)}</div>
-      <div style={{fontSize:11,color:"rgba(255,255,255,0.5)",marginTop:2}}>Only fully paid bills counted @ ₹1.5/meter</div>
+    {/* Hero Banner */}
+    <div style={{background:`linear-gradient(135deg,${C.navy} 0%,#1E3A5F 100%)`,borderRadius:16,padding:"18px 16px",marginBottom:14,border:"1px solid rgba(232,201,126,0.3)",boxShadow:"0 4px 20px rgba(0,0,0,0.15)"}}>
+      <div style={{fontSize:10,color:"rgba(232,201,126,0.7)",textTransform:"uppercase",letterSpacing:1.5,fontWeight:700,marginBottom:4}}>💰 Commission Earned (FIFO)</div>
+      <div style={{fontSize:32,fontWeight:900,color:C.gold,letterSpacing:-0.5}}>₹{fmt(totalCommission)}</div>
+      <div style={{fontSize:11,color:"rgba(255,255,255,0.4)",marginTop:4}}>Only fully adjusted bills · ₹1.50 per meter</div>
+      <div style={{display:"flex",gap:16,marginTop:14,paddingTop:12,borderTop:"1px solid rgba(255,255,255,0.08)"}}>
+        <div><div style={{fontSize:18,fontWeight:900,color:"#fff"}}>{commList.length}</div><div style={{fontSize:10,color:"rgba(255,255,255,0.5)"}}>Customers</div></div>
+        <div><div style={{fontSize:18,fontWeight:900,color:"#fff"}}>{totalBills}</div><div style={{fontSize:10,color:"rgba(255,255,255,0.5)"}}>Bills Cleared</div></div>
+        <div><div style={{fontSize:18,fontWeight:900,color:"#fff"}}>{fmt(totalMeters)} m</div><div style={{fontSize:10,color:"rgba(255,255,255,0.5)"}}>Total Meters</div></div>
+      </div>
     </div>
-    <div style={{display:"flex",gap:8,marginBottom:12,flexWrap:"wrap"}}>
-      <button onClick={()=>exportCSV([["Customer","Bills Adjusted","Meters","Commission"],...commList.map(v=>[v.name,v.bills,v.meters,v.commission])],`Commission_${today()}.csv`)} style={{background:C.green,color:"#fff",border:"none",borderRadius:9,padding:"9px 15px",fontSize:12.5,fontWeight:700,cursor:"pointer",minHeight:40}}>Export CSV</button>
-      <button onClick={doPDF} style={{background:C.red,color:"#fff",border:"none",borderRadius:9,padding:"9px 15px",fontSize:12.5,fontWeight:700,cursor:"pointer",minHeight:40}}>PDF</button>
+
+    {/* Action Buttons */}
+    <div style={{display:"flex",gap:8,marginBottom:12}}>
+      <button onClick={()=>exportCSV([["#","Customer","Bills","Meters","Commission(₹)"],...commList.map((v,i)=>[i+1,v.name,v.bills,v.meters,v.commission])],`Commission_${today()}.csv`)} style={{background:C.green,color:"#fff",border:"none",borderRadius:9,padding:"10px 16px",fontSize:12.5,fontWeight:700,cursor:"pointer",minHeight:42,display:"flex",alignItems:"center",gap:6}}>📥 CSV</button>
+      <button onClick={doPDF} style={{background:C.red,color:"#fff",border:"none",borderRadius:9,padding:"10px 16px",fontSize:12.5,fontWeight:700,cursor:"pointer",minHeight:42,display:"flex",alignItems:"center",gap:6}}>🖨️ PDF</button>
     </div>
+
     <SegCtrl options={[{v:"summary",l:"Customer Summary"},{v:"bills",l:"Bill-wise Detail"}]} val={view} onChange={setView}/>
+
     <div style={{marginTop:12}}>
     {view==="summary"&&<>
-      {commList.length===0&&<Empty text="No commission yet. Commission is calculated on fully paid bills (FIFO)."/>}
-      {commList.map((v,i)=>(<div key={v.name} style={{background:i%2===0?C.card:"#F8FAFC",borderRadius:12,padding:"12px 14px",marginBottom:8,boxShadow:"0 1px 6px rgba(0,0,0,0.05)",borderLeft:`3px solid ${C.purple}`}}>
-        <Row>
-          <div><B style={{fontSize:13.5}}>{v.name}</B><Mute>{v.bills} bills · {fmt(v.meters)} mtrs</Mute></div>
-          <span style={{fontWeight:900,color:C.purple,fontSize:15}}>₹{fmt(v.commission)}</span>
-        </Row>
-      </div>))}
-      <div style={{background:C.navy,borderRadius:12,padding:"14px 16px",marginTop:8,display:"flex",justifyContent:"space-between"}}><span style={{fontWeight:700,color:C.gold}}>TOTAL COMMISSION</span><span style={{fontWeight:900,fontSize:16,color:C.gold}}>₹{fmt(totalCommission)}</span></div>
+      {commList.length===0&&<Empty text="No commission yet. Bills need to be fully paid (FIFO) for commission."/>}
+      {commList.map((v,i)=>{
+        const pct=Math.round(v.commission/maxComm*100);
+        const colors=[C.purple,C.blue,C.teal,C.orange,C.green,C.red];
+        const col=colors[i%colors.length];
+        return(
+          <div key={v.name} style={{background:C.card,borderRadius:13,padding:"14px 15px",marginBottom:9,boxShadow:"0 1px 8px rgba(0,0,0,0.06)",border:`1px solid ${C.border}`}}>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:8}}>
+              <div style={{flex:1,paddingRight:10}}>
+                <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:2}}>
+                  <div style={{width:26,height:26,borderRadius:8,background:col,display:"flex",alignItems:"center",justifyContent:"center",color:"#fff",fontSize:11,fontWeight:900,flexShrink:0}}>#{i+1}</div>
+                  <B style={{fontSize:13.5,color:C.navy}}>{v.name}</B>
+                </div>
+                <div style={{display:"flex",gap:12,fontSize:11.5,color:C.muted,marginTop:4,marginLeft:34}}>
+                  <span>📄 {v.bills} bills</span>
+                  <span>📏 {fmt(v.meters)} m</span>
+                </div>
+              </div>
+              <div style={{textAlign:"right"}}>
+                <div style={{fontWeight:900,fontSize:17,color:col}}>₹{fmt(v.commission)}</div>
+                <div style={{fontSize:10,color:C.muted,marginTop:1}}>{(v.commission/totalCommission*100).toFixed(1)}% of total</div>
+              </div>
+            </div>
+            <div style={{background:"#F0F4F8",borderRadius:6,height:6,overflow:"hidden"}}>
+              <div style={{width:`${pct}%`,background:`linear-gradient(90deg,${col},${col}aa)`,height:6,borderRadius:6,transition:"width 0.3s"}}/>
+            </div>
+          </div>
+        );
+      })}
+      <div style={{background:`linear-gradient(135deg,${C.navy},${C.navyMid})`,borderRadius:13,padding:"16px",marginTop:8,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+        <div>
+          <div style={{fontSize:11,color:"rgba(255,255,255,0.5)",fontWeight:600}}>TOTAL COMMISSION</div>
+          <div style={{fontSize:11,color:"rgba(255,255,255,0.35)",marginTop:1}}>{totalBills} bills · {fmt(totalMeters)} m</div>
+        </div>
+        <span style={{fontWeight:900,fontSize:20,color:C.gold}}>₹{fmt(totalCommission)}</span>
+      </div>
     </>}
+
     {view==="bills"&&<>
       {detailList.length===0&&<Empty text="No fully adjusted bills found."/>}
-      {detailList.map((v,i)=>(<div key={i} style={{background:i%2===0?C.card:"#F8FAFC",borderRadius:12,padding:"12px 14px",marginBottom:8,boxShadow:"0 1px 6px rgba(0,0,0,0.05)",borderLeft:`3px solid ${C.purple}`}}>
-        <Row><B style={{fontSize:13}}>{v.customer}</B><span style={{fontWeight:900,color:C.purple}}>₹{fmt(v.commission)}</span></Row>
-        <Mute>Bill No: {v.billNo} · {fmtD(v.date)}</Mute>
-        <Mute>{fmt(v.qty)} m × ₹1.5 · Sale: ₹{fmt(v.amount)}</Mute>
-      </div>))}
-      <div style={{background:C.navy,borderRadius:12,padding:"14px 16px",marginTop:8,display:"flex",justifyContent:"space-between"}}><span style={{fontWeight:700,color:C.gold}}>TOTAL COMMISSION</span><span style={{fontWeight:900,fontSize:16,color:C.gold}}>₹{fmt(totalCommission)}</span></div>
+      {detailList.map((v,i)=>(
+        <div key={i} style={{background:C.card,borderRadius:12,padding:"12px 14px",marginBottom:8,boxShadow:"0 1px 6px rgba(0,0,0,0.05)",border:`1px solid ${C.border}`}}>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start"}}>
+            <div style={{flex:1,paddingRight:10}}>
+              <B style={{fontSize:13,color:C.navy}}>{v.customer}</B>
+              <Mute>📋 Bill : {v.billNo}</Mute>
+              <Mute>📅 Date : {fmtD(v.date)}</Mute>
+              <Mute>📏 {fmt(v.qty)} m × ₹1.50</Mute>
+              <Mute>🏷️ Sale : ₹{fmt(v.amount)}</Mute>
+            </div>
+            <div style={{textAlign:"right"}}>
+              <div style={{fontWeight:900,color:C.purple,fontSize:16}}>₹{fmt(v.commission)}</div>
+              <div style={{fontSize:10,color:C.muted,marginTop:2}}>Commission</div>
+            </div>
+          </div>
+        </div>
+      ))}
+      <div style={{background:`linear-gradient(135deg,${C.navy},${C.navyMid})`,borderRadius:13,padding:"16px",marginTop:8,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+        <span style={{fontWeight:700,color:C.gold}}>TOTAL COMMISSION</span>
+        <span style={{fontWeight:900,fontSize:20,color:C.gold}}>₹{fmt(totalCommission)}</span>
+      </div>
     </>}
     </div>
   </div>);
@@ -625,29 +889,168 @@ function MastersTab({data,onAdd,onDel,onEdit,onImportExcel}){
 // ─── REPORTS TAB ─────────────────────────────────────────────────
 function ReportsTab({data,tradingOut,tots,generatePDF}){
   const[rep,setRep]=useState("sales");
-  const doPDF=()=>{
-    const rows=[...data.tradingSales].sort((a,b)=>new Date(b.date)-new Date(a.date)).map(s=>`<tr><td>${fmtD(s.date)}</td><td>${s.billNo||"—"}</td><td>${s.customerName}</td><td>${s.productName}</td><td style="text-align:right">${fmt(s.meters)}</td><td style="text-align:right">₹${fmt(s.amount)}</td></tr>`).join("");
-    generatePDF("Sales Report",`<table><thead><tr><th>Date</th><th>Bill No</th><th>Customer</th><th>Product</th><th>Meters</th><th>Amount</th></tr></thead><tbody>${rows}<tr class="tot"><td colspan="5">TOTAL</td><td>₹${fmt(tots.totTradingSale)}</td></tr></tbody></table>`);
-  };
-  return(<div>
-    <div style={{display:"flex",overflowX:"auto",gap:8,marginBottom:14,scrollbarWidth:"none"}}>
-      {[{v:"sales",l:"Sales"},{v:"outstanding",l:"Outstanding"},{v:"commission",l:"Commission"}].map(r=>(<button key={r.v} onClick={()=>setRep(r.v)} style={{flex:"0 0 auto",padding:"10px 16px",borderRadius:20,fontSize:13,fontWeight:rep===r.v?700:500,border:`1.5px solid ${rep===r.v?C.navy:C.border}`,background:rep===r.v?C.navy:"#fff",color:rep===r.v?C.gold:"#666",cursor:"pointer",minHeight:42}}>{r.l}</button>))}
-    </div>
-    {rep==="sales"&&<>
-      <div style={{display:"flex",gap:8,marginBottom:10}}>
-        <button onClick={()=>exportCSV([["Date","Bill No","Customer","Product","Supplier","Meters","Rate","Amount"],...data.tradingSales.map(s=>[fmtD(s.date),s.billNo||"",s.customerName,s.productName,s.supplierName,s.meters,s.rate,s.amount])],`Sales_${today()}.csv`)} style={{background:C.green,color:"#fff",border:"none",borderRadius:9,padding:"9px 15px",fontSize:12.5,fontWeight:700,cursor:"pointer",minHeight:40}}>Export CSV</button>
-        <button onClick={doPDF} style={{background:C.red,color:"#fff",border:"none",borderRadius:9,padding:"9px 15px",fontSize:12.5,fontWeight:700,cursor:"pointer",minHeight:40}}>PDF</button>
+  const[fy,setFY]=useState(ALL_FY);
+  const todayMs=new Date().setHours(0,0,0,0);
+  const allFYs=useMemo(()=>getAvailableFYs(data.tradingSales),[data]);
+
+  const filteredSales=useMemo(()=>filterByFY(data.tradingSales,fy),[data,fy]);
+  const filteredPay=useMemo(()=>{
+    if(fy===ALL_FY)return data.tradingPayments;
+    const{start,end}=getFYRange(fy);
+    return data.tradingPayments.filter(p=>{const d=new Date(p.date);return d>=start&&d<=end;});
+  },[data,fy]);
+
+  const FYPicker=()=>(
+    <div style={{marginBottom:12}}>
+      <div style={{fontSize:10.5,color:C.muted,fontWeight:600,marginBottom:5,textTransform:"uppercase"}}>Filter by FY</div>
+      <div style={{display:"flex",overflowX:"auto",gap:5,scrollbarWidth:"none"}}>
+        {allFYs.map(f=>(
+          <button key={f} onClick={()=>setFY(f)} style={{flex:"0 0 auto",padding:"7px 12px",borderRadius:16,fontSize:11.5,fontWeight:fy===f?700:500,border:`1.5px solid ${fy===f?C.navy:C.border}`,background:fy===f?C.navy:"#fff",color:fy===f?C.gold:"#666",cursor:"pointer",whiteSpace:"nowrap"}}>
+            {f===ALL_FY?"All":f}
+          </button>
+        ))}
       </div>
-      <div style={{background:C.card,borderRadius:12,padding:14,marginBottom:12}}><Mute>Total Sales</Mute><div style={{fontSize:22,fontWeight:900,color:C.blue}}>₹{fmt(tots.totTradingSale)}</div></div>
-      {[...data.tradingSales].sort((a,b)=>new Date(b.date)-new Date(a.date)).map(s=>(<div key={s.id} style={{background:C.card,borderRadius:11,padding:"12px 14px",marginBottom:8}}><Row><B style={{fontSize:13.5}}>{s.customerName}</B><span style={{fontWeight:900,color:C.blue}}>₹{fmt(s.amount)}</span></Row>{s.billNo&&<Mute>Bill No: {s.billNo}</Mute>}<Mute>{s.productName} · {fmt(s.meters)}m · {fmtD(s.date)}</Mute></div>))}
+    </div>
+  );
+
+  const doPDFSales=()=>{
+    const rows=[...filteredSales].sort((a,b)=>new Date(b.date)-new Date(a.date)).map(s=>`<tr><td>${fmtD(s.date)}</td><td>${s.billNo||"—"}</td><td>${s.customerName}</td><td>${s.productName||"—"}</td><td style="text-align:right">${fmt(s.meters)} m</td><td style="text-align:right">₹${fmt(s.rate)}</td><td style="text-align:right;font-weight:bold">₹${fmt(s.amount)}</td></tr>`).join("");
+    const total=filteredSales.reduce((a,s)=>a+(+s.amount||0),0);
+    generatePDF(`Sales Register${fy!==ALL_FY?" — FY "+fy:""}`,`<table><thead><tr><th>Date</th><th>Bill No</th><th>Customer</th><th>Product</th><th>Qty (m)</th><th>Rate</th><th>Amount</th></tr></thead><tbody>${rows}<tr class="tot"><td colspan="6">TOTAL</td><td>₹${fmt(total)}</td></tr></tbody></table>`);
+  };
+
+  // Outstanding is always current — no FY filter (it's live balance)
+  const outEntries=useMemo(()=>Object.values(tradingOut).map(v=>{
+    const net=Math.max(0,v.due+(v.debit||0)-v.paid-(v.credit||0));
+    const custSales=data.tradingSales.filter(s=>s.customerName===v.name).sort((a,b)=>new Date(a.date)-new Date(b.date));
+    let rem=v.paid;const openBills=[];
+    custSales.forEach(s=>{const amt=+s.amount||0;const d=Math.min(amt,rem);rem-=d;const left=amt-d;
+      if(left>0){const days=Math.floor((todayMs-new Date(s.date).setHours(0,0,0,0))/86400000);
+        openBills.push({billNo:s.billNo||"—",date:s.date,billAmount:amt,outstanding:left,days,productName:s.productName,meters:+s.meters||0,rate:+s.rate||0});}
+    });
+    return{name:v.name,net,openBills};
+  }).filter(v=>v.net>0).sort((a,b)=>b.net-a.net),[data,tradingOut]);
+
+  const doPDFOut=()=>{
+    const rows=outEntries.flatMap(v=>[
+      `<tr style="background:#F0F4F8"><td colspan="6"><b>${v.name}</b></td><td style="text-align:right;font-weight:bold;color:#E74C3C">₹${fmt(v.net)}</td></tr>`,
+      ...v.openBills.map(b=>`<tr><td style="padding-left:20px">${fmtD(b.date)}</td><td>${b.billNo}</td><td>${b.productName||"—"}</td><td style="text-align:right">${fmt(b.meters)} m</td><td style="text-align:right">₹${fmt(b.billAmount)}</td><td style="text-align:right">${b.days} Days</td><td style="text-align:right;color:#E74C3C;font-weight:bold">₹${fmt(b.outstanding)}</td></tr>`)
+    ]).join("");
+    generatePDF("Outstanding Statement — Bill-wise",`<table><thead><tr><th>Bill Date</th><th>Bill No</th><th>Product</th><th>Qty</th><th>Bill Amt</th><th>Days</th><th>Outstanding</th></tr></thead><tbody>${rows}<tr class="tot"><td colspan="6">TOTAL</td><td>₹${fmt(tots.totTradingOut)}</td></tr></tbody></table>`);
+  };
+
+  const{totalCommission,commByCustomer}=useMemo(()=>calcFIFOCommission(filteredSales,filteredPay),[filteredSales,filteredPay]);
+  const commList=Object.values(commByCustomer).sort((a,b)=>b.commission-a.commission);
+  const doPDFComm=()=>{
+    const rows=commList.map((v,i)=>`<tr><td>${i+1}</td><td>${v.name}</td><td style="text-align:right">${v.bills}</td><td style="text-align:right">${fmt(v.meters)} m</td><td style="text-align:right;color:#8E44AD;font-weight:bold">₹${fmt(v.commission)}</td></tr>`).join("");
+    generatePDF(`Commission Statement${fy!==ALL_FY?" — FY "+fy:""}`,`<table><thead><tr><th>#</th><th>Customer</th><th>Bills</th><th>Meters</th><th>Commission</th></tr></thead><tbody>${rows}<tr class="tot"><td colspan="4">TOTAL</td><td>₹${fmt(totalCommission)}</td></tr></tbody></table>`);
+  };
+
+  const totSales=filteredSales.reduce((a,s)=>a+(+s.amount||0),0);
+
+  return(<div>
+    <div style={{display:"flex",overflowX:"auto",gap:8,marginBottom:12,scrollbarWidth:"none"}}>
+      {[{v:"sales",l:"Sales Register"},{v:"outstanding",l:"Outstanding"},{v:"commission",l:"Commission"}].map(r=>(<button key={r.v} onClick={()=>setRep(r.v)} style={{flex:"0 0 auto",padding:"10px 16px",borderRadius:20,fontSize:13,fontWeight:rep===r.v?700:500,border:`1.5px solid ${rep===r.v?C.navy:C.border}`,background:rep===r.v?C.navy:"#fff",color:rep===r.v?C.gold:"#666",cursor:"pointer",minHeight:42}}>{r.l}</button>))}
+    </div>
+
+    {rep==="sales"&&<>
+      <FYPicker/>
+      <div style={{display:"flex",gap:8,marginBottom:10}}>
+        <button onClick={()=>exportCSV([["Date","Bill No","Customer","Product","Qty(m)","Rate","Amount"],...filteredSales.map(s=>[fmtD(s.date),s.billNo||"",s.customerName,s.productName,s.meters,s.rate,s.amount])],`SalesRegister_${fy.replace(/[^0-9\-]/g,"")}_${today()}.csv`)} style={{background:C.green,color:"#fff",border:"none",borderRadius:9,padding:"9px 15px",fontSize:12.5,fontWeight:700,cursor:"pointer",minHeight:40}}>📥 CSV</button>
+        <button onClick={doPDFSales} style={{background:C.red,color:"#fff",border:"none",borderRadius:9,padding:"9px 15px",fontSize:12.5,fontWeight:700,cursor:"pointer",minHeight:40}}>🖨️ PDF</button>
+      </div>
+      <div style={{background:C.card,borderRadius:12,padding:14,marginBottom:12,borderLeft:`4px solid ${C.blue}`}}>
+        <Mute>Total Sales {fy!==ALL_FY?`— FY ${fy}`:""} ({filteredSales.length} bills)</Mute>
+        <div style={{fontSize:22,fontWeight:900,color:C.blue}}>₹{fmt(totSales)}</div>
+      </div>
+      {[...filteredSales].sort((a,b)=>new Date(b.date)-new Date(a.date)).map(s=>(
+        <div key={s.id} style={{background:C.card,borderRadius:11,padding:"12px 14px",marginBottom:8,boxShadow:"0 1px 6px rgba(0,0,0,0.05)"}}>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start"}}>
+            <div style={{flex:1,paddingRight:10}}>
+              <B style={{fontSize:13.5,color:C.navy}}>{s.customerName}</B>
+              {s.billNo&&<Mute>📋 Bill No : {s.billNo}</Mute>}
+              <Mute>📅 {fmtD(s.date)}</Mute>
+              {s.productName&&<Mute>📦 {s.productName}</Mute>}
+              <Mute>📏 {fmt(s.meters)} m @ ₹{fmt(s.rate)}/m</Mute>
+            </div>
+            <span style={{fontWeight:900,color:C.blue,fontSize:15}}>₹{fmt(s.amount)}</span>
+          </div>
+        </div>
+      ))}
     </>}
+
     {rep==="outstanding"&&<>
-      <div style={{background:C.card,borderRadius:12,padding:14,marginBottom:12}}><Mute>Total Outstanding</Mute><div style={{fontSize:22,fontWeight:900,color:C.red}}>₹{fmt(tots.totTradingOut)}</div></div>
-      {Object.values(tradingOut).filter(v=>Math.max(0,v.due+(v.debit||0)-v.paid-(v.credit||0))>0).sort((a,b)=>(b.due-b.paid)-(a.due-a.paid)).map(v=>(<div key={v.name} style={{background:C.card,borderRadius:11,padding:"12px 14px",marginBottom:8,borderLeft:`3px solid ${C.red}`}}><Row><B style={{fontSize:13.5}}>{v.name}</B><span style={{fontWeight:900,color:C.red}}>₹{fmt(Math.max(0,v.due+(v.debit||0)-v.paid-(v.credit||0)))}</span></Row><Mute>Sales: ₹{fmt(v.due)} · Paid: ₹{fmt(v.paid)}</Mute></div>))}
+      <div style={{background:"#FFF8E7",borderRadius:10,padding:"10px 13px",marginBottom:12,fontSize:12,color:"#7D6608",border:"1px solid #F9E79F"}}>
+        📌 Outstanding is always current (live balance). FY filter does not apply here.
+      </div>
+      <div style={{display:"flex",gap:8,marginBottom:10}}>
+        <button onClick={()=>exportCSV([["Customer","Bill Date","Bill No","Product","Qty","Bill Amt","Outstanding","Days"],...outEntries.flatMap(v=>v.openBills.map(b=>[v.name,fmtD(b.date),b.billNo,b.productName,b.meters,b.billAmount,b.outstanding,b.days]))],`Outstanding_${today()}.csv`)} style={{background:C.green,color:"#fff",border:"none",borderRadius:9,padding:"9px 15px",fontSize:12.5,fontWeight:700,cursor:"pointer",minHeight:40}}>📥 CSV</button>
+        <button onClick={doPDFOut} style={{background:C.red,color:"#fff",border:"none",borderRadius:9,padding:"9px 15px",fontSize:12.5,fontWeight:700,cursor:"pointer",minHeight:40}}>🖨️ PDF</button>
+      </div>
+      <div style={{background:C.card,borderRadius:12,padding:14,marginBottom:12,borderLeft:`4px solid ${C.red}`}}>
+        <Mute>Total Outstanding ({outEntries.length} customers)</Mute>
+        <div style={{fontSize:22,fontWeight:900,color:C.red}}>₹{fmt(tots.totTradingOut)}</div>
+      </div>
+      {outEntries.map(v=>(
+        <div key={v.name} style={{background:C.card,borderRadius:13,padding:"0",marginBottom:12,boxShadow:"0 1px 8px rgba(0,0,0,0.07)",overflow:"hidden"}}>
+          <div style={{background:`linear-gradient(90deg,${C.navyMid},${C.navy})`,padding:"11px 14px",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+            <B style={{color:"#fff",fontSize:13}}>{v.name}</B>
+            <span style={{fontWeight:900,color:C.gold,fontSize:14}}>₹{fmt(v.net)}</span>
+          </div>
+          {v.openBills.map((b,i)=>{
+            const col=b.days<=30?C.green:b.days<=60?C.orange:b.days<=90?"#E67E22":C.red;
+            return(
+              <div key={i} style={{padding:"10px 14px",borderBottom:`1px solid ${C.border}`,background:i%2===0?"#fff":"#FAFBFC"}}>
+                <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start"}}>
+                  <div style={{flex:1}}>
+                    <div style={{display:"flex",gap:8,alignItems:"center",flexWrap:"wrap"}}>
+                      <span style={{fontSize:12.5,fontWeight:700,color:C.navy}}>{b.billNo}</span>
+                      <span style={{fontSize:11,color:C.muted}}>📅 {fmtD(b.date)}</span>
+                      <span style={{fontSize:11,color:col,fontWeight:700}}>⏱ {b.days}d</span>
+                    </div>
+                    {b.productName&&<div style={{fontSize:11.5,color:C.teal,marginTop:3}}>📦 {b.productName}</div>}
+                    {b.meters>0&&<div style={{fontSize:11.5,color:C.muted}}>📏 {fmt(b.meters)} m {b.rate>0?`@ ₹${fmt(b.rate)}/m`:""}</div>}
+                    <div style={{fontSize:11.5,color:C.muted}}>Bill Amt: ₹{fmt(b.billAmount)}</div>
+                  </div>
+                  <div style={{textAlign:"right",minWidth:90}}>
+                    <div style={{fontWeight:900,fontSize:14,color:C.red}}>₹{fmt(b.outstanding)}</div>
+                    <div style={{fontSize:10,color:col,fontWeight:600}}>O/S</div>
+                  </div>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      ))}
     </>}
+
     {rep==="commission"&&<>
-      <div style={{background:C.card,borderRadius:12,padding:14,marginBottom:12}}><Mute>Total Commission</Mute><div style={{fontSize:22,fontWeight:900,color:C.purple}}>₹{fmt(tots.totComm)}</div></div>
-      {data.tradingPayments.filter(p=>p.commissionEarned>0).sort((a,b)=>new Date(b.date)-new Date(a.date)).map(p=>(<div key={p.id} style={{background:C.card,borderRadius:11,padding:"12px 14px",marginBottom:8,borderLeft:`3px solid ${C.purple}`}}><Row><B style={{fontSize:13.5}}>{p.customerName}</B><span style={{fontWeight:900,color:C.purple}}>₹{fmt(p.commissionEarned)}</span></Row>{p.billNo&&<Mute>Bill No: {p.billNo}</Mute>}<Mute>Payment: ₹{fmt(p.amount)} · {p.mode} · {fmtD(p.date)}</Mute></div>))}
+      <FYPicker/>
+      <div style={{display:"flex",gap:8,marginBottom:10}}>
+        <button onClick={()=>exportCSV([["#","Customer","Bills","Meters","Commission"],...commList.map((v,i)=>[i+1,v.name,v.bills,v.meters,v.commission])],`Commission_${fy.replace(/[^0-9\-]/g,"")}_${today()}.csv`)} style={{background:C.green,color:"#fff",border:"none",borderRadius:9,padding:"9px 15px",fontSize:12.5,fontWeight:700,cursor:"pointer",minHeight:40}}>📥 CSV</button>
+        <button onClick={doPDFComm} style={{background:C.red,color:"#fff",border:"none",borderRadius:9,padding:"9px 15px",fontSize:12.5,fontWeight:700,cursor:"pointer",minHeight:40}}>🖨️ PDF</button>
+      </div>
+      <div style={{background:C.card,borderRadius:12,padding:14,marginBottom:12,borderLeft:`4px solid ${C.purple}`}}>
+        <Mute>Commission {fy!==ALL_FY?`— FY ${fy}`:""} (FIFO)</Mute>
+        <div style={{fontSize:22,fontWeight:900,color:C.purple}}>₹{fmt(totalCommission)}</div>
+      </div>
+      {commList.length===0&&<Empty text="No commission for this period."/>}
+      {commList.map((v,i)=>(
+        <div key={v.name} style={{background:C.card,borderRadius:11,padding:"12px 14px",marginBottom:8,boxShadow:"0 1px 6px rgba(0,0,0,0.05)",borderLeft:`3px solid ${C.purple}`}}>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start"}}>
+            <div>
+              <B style={{fontSize:13.5}}>{v.name}</B>
+              <Mute>📄 {v.bills} bills fully adjusted</Mute>
+              <Mute>📏 {fmt(v.meters)} m @ ₹1.50</Mute>
+            </div>
+            <span style={{fontWeight:900,color:C.purple,fontSize:15}}>₹{fmt(v.commission)}</span>
+          </div>
+        </div>
+      ))}
+      {commList.length>0&&<div style={{background:C.navy,borderRadius:12,padding:"14px 16px",marginTop:8,display:"flex",justifyContent:"space-between"}}>
+        <span style={{fontWeight:700,color:C.gold}}>TOTAL</span>
+        <span style={{fontWeight:900,fontSize:16,color:C.gold}}>₹{fmt(totalCommission)}</span>
+      </div>}
     </>}
   </div>);
 }
