@@ -244,7 +244,7 @@ function TradingTab({data,onAdd,onAddPay,onDel,tradingOut}){
   const totSales=data.tradingSales.reduce((a,s)=>a+(+s.amount||0),0);
   const totPaid=data.tradingPayments.reduce((a,p)=>a+(+p.amount||0),0);
   const totOut=Object.values(tradingOut).reduce((a,v)=>a+Math.max(0,v.due+(v.debit||0)-v.paid-(v.credit||0)),0);
-  const totComm=data.tradingPayments.reduce((a,p)=>a+(+p.commissionEarned||0),0);
+  const totComm=calcFIFOCommission(data.tradingSales,data.tradingPayments).totalCommission;
   return(<div>
     <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:12}}>
       <KpiCard icon="🏪" label="Total Sales" val={totSales} color={C.blue}/>
@@ -367,14 +367,11 @@ function OutstandingTab({tradingOut,data,onAddPay,generatePDF}){
     };
     const divider="━━━━━━━━━━━━━━━━━━━━━━━━━";
     const billLines=v.openBills.map((b,i)=>{
-      const credit=Math.round(Math.max(0,(b.billAmount||b.outstanding)-b.outstanding));
       const bucketShort=b.days<=30?"0-30d":b.days<=60?"31-60d":b.days<=90?"61-90d":b.days<=120?"91-120d":"120+d";
       const billNoClean=b.billNo==="—"?"—":String(b.billNo).replace(/IMP-/i,"");
       return `📌 *Bill ${i+1}*\n`+
         `   Date    : ${fmtBillDate(b.date)}\n`+
         `   Bill No : ${billNoClean}\n`+
-        `   Amt     : ₹${fmtAmt(b.billAmount||b.outstanding)}\n`+
-        (credit>0?`   Credit  : ₹${fmtAmt(credit)}\n`:"")+
         `   O/S     : ₹${fmtAmt(b.outstanding)}\n`+
         `   Ageing  : ${b.days} Days (${bucketShort})`;
     }).join("\n\n");
@@ -382,8 +379,15 @@ function OutstandingTab({tradingOut,data,onAddPay,generatePDF}){
   };
 
   const doPDF=()=>{
-    const allRows=entries.flatMap(v=>v.openBills.map(b=>`<tr><td>${v.name}</td><td>${b.billNo}</td><td>${fmtD(b.date)}</td><td style="text-align:right;color:#E74C3C;font-weight:bold">₹${fmt(b.outstanding)}</td><td>${b.days} Days</td><td>${ageBucket(b.days).label}</td></tr>`)).join("");
-    generatePDF("Customer Outstanding — Bill-wise",`<table><thead><tr><th>Customer</th><th>Bill No</th><th>Bill Date</th><th>Outstanding</th><th>Days</th><th>Ageing</th></tr></thead><tbody>${allRows}<tr class="tot"><td colspan="3">TOTAL</td><td>₹${fmt(total)}</td><td colspan="2"></td></tr></tbody></table>`);
+    const partyBlocks=entries.map(v=>{
+      const credit=v.openBills.map(b=>Math.max(0,(b.billAmount||b.outstanding)-b.outstanding));
+      const rows=v.openBills.map((b,i)=>`<tr><td>${fmtD(b.date)}</td><td>${b.billNo}</td><td style="text-align:right">₹${fmt(b.billAmount||b.outstanding)}</td><td style="text-align:right">₹${fmt(credit[i])}</td><td style="text-align:right;color:#E74C3C;font-weight:bold">₹${fmt(b.outstanding)}</td><td style="text-align:right">${b.days}</td></tr>`).join("");
+      return `<div class="party"><div class="party-name">Party : ${v.name}</div>
+        <table><thead><tr><th>Bill Date</th><th>Bill No</th><th style="text-align:right">Amount</th><th style="text-align:right">Credit</th><th style="text-align:right">Outstanding</th><th style="text-align:right">Days</th></tr></thead>
+        <tbody>${rows}<tr class="party-tot"><td colspan="4">Party Total</td><td style="text-align:right">₹${fmt(v.net)}</td><td></td></tr></tbody></table></div>`;
+    }).join("");
+    const style=`<style>.party{margin-bottom:22px;page-break-inside:avoid;}.party-name{font-weight:800;font-size:14px;color:#0F1923;margin-bottom:6px;padding-bottom:4px;border-bottom:1.5px solid #0F1923;}.party-tot td{background:#F0F4F8;font-weight:bold;border-top:1.5px solid #0F1923;}table th,table td{border:1px solid #ddd;}</style>`;
+    generatePDF("Outstanding Statement",`${style}${partyBlocks}<div class="tot" style="display:flex;justify-content:space-between;background:#0F1923;color:#E8C97E;padding:12px 16px;border-radius:6px;font-weight:bold;font-size:15px;margin-top:10px;"><span>TOTAL OUTSTANDING</span><span>₹${fmt(total)}</span></div>`);
   };
 
   return(<div>
@@ -598,7 +602,7 @@ function AnalyticsTab({data,tradingOut}){
 
     {/* Chart Type Selector */}
     <div style={{display:"flex",overflowX:"auto",gap:6,marginBottom:12,scrollbarWidth:"none"}}>
-      {[{v:"monthly",l:"📅 Monthly"},{v:"yoy",l:"📊 Year-on-Year"},{v:"customer",l:"👥 Customers"},{v:"product",l:"📦 Products"},{v:"fycompare",l:"📈 FY Summary"}].map(ct=>(
+      {[{v:"monthly",l:"📅 Monthly"},{v:"trend",l:"📈 Trend"},{v:"yoy",l:"📊 Year-on-Year"},{v:"customer",l:"👥 Customers"},{v:"product",l:"📦 Products"},{v:"fycompare",l:"📈 FY Summary"}].map(ct=>(
         <button key={ct.v} onClick={()=>setChartType(ct.v)} style={{flex:"0 0 auto",padding:"9px 13px",borderRadius:20,fontSize:12,fontWeight:chartType===ct.v?700:500,border:`1.5px solid ${chartType===ct.v?C.navy:C.border}`,background:chartType===ct.v?C.navy:"#fff",color:chartType===ct.v?C.gold:"#666",cursor:"pointer",whiteSpace:"nowrap",minHeight:38}}>{ct.l}</button>
       ))}
     </div>
@@ -618,6 +622,23 @@ function AnalyticsTab({data,tradingOut}){
             <Bar dataKey="sales" fill={C.blue} radius={[4,4,0,0]} name="Sales" barSize={14}/>
             <Bar dataKey="payments" fill={C.green} radius={[4,4,0,0]} name="Collections" barSize={14}/>
           </BarChart>
+        </ResponsiveContainer>}
+      </>}
+
+      {chartType==="trend"&&<>
+        <div style={{fontWeight:700,fontSize:14,color:C.navy,marginBottom:4}}>Sales Trend {fy!==ALL_FY?`— FY ${fy}`:""}</div>
+        <div style={{fontSize:11,color:C.muted,marginBottom:14}}>Month-over-month line trend — Sales vs Collections</div>
+        {monthly.length===0?<Empty text="No data for selected year."/>:
+        <ResponsiveContainer width="100%" height={260}>
+          <LineChart data={monthly} margin={{top:4,right:8,left:0,bottom:4}}>
+            <CartesianGrid strokeDasharray="3 3" stroke="#F0F4F8"/>
+            <XAxis dataKey="label" tick={{fontSize:10}} tickLine={false}/>
+            <YAxis tickFormatter={v=>v>=100000?`₹${(v/100000).toFixed(0)}L`:`₹${(v/1000).toFixed(0)}K`} tick={{fontSize:10}} tickLine={false} axisLine={false}/>
+            <Tooltip formatter={v=>`₹${fmt(v)}`}/>
+            <Legend iconSize={10} wrapperStyle={{fontSize:11}}/>
+            <Line type="monotone" dataKey="sales" stroke={C.blue} strokeWidth={2.5} dot={{r:4,fill:C.blue}} name="Sales"/>
+            <Line type="monotone" dataKey="payments" stroke={C.green} strokeWidth={2.5} dot={{r:4,fill:C.green}} name="Collections"/>
+          </LineChart>
         </ResponsiveContainer>}
       </>}
 
@@ -932,11 +953,15 @@ function ReportsTab({data,tradingOut,tots,generatePDF}){
   }).filter(v=>v.net>0).sort((a,b)=>b.net-a.net),[data,tradingOut]);
 
   const doPDFOut=()=>{
-    const rows=outEntries.flatMap(v=>[
-      `<tr style="background:#F0F4F8"><td colspan="6"><b>${v.name}</b></td><td style="text-align:right;font-weight:bold;color:#E74C3C">₹${fmt(v.net)}</td></tr>`,
-      ...v.openBills.map(b=>`<tr><td style="padding-left:20px">${fmtD(b.date)}</td><td>${b.billNo}</td><td>${b.productName||"—"}</td><td style="text-align:right">${fmt(b.meters)} m</td><td style="text-align:right">₹${fmt(b.billAmount)}</td><td style="text-align:right">${b.days} Days</td><td style="text-align:right;color:#E74C3C;font-weight:bold">₹${fmt(b.outstanding)}</td></tr>`)
-    ]).join("");
-    generatePDF("Outstanding Statement — Bill-wise",`<table><thead><tr><th>Bill Date</th><th>Bill No</th><th>Product</th><th>Qty</th><th>Bill Amt</th><th>Days</th><th>Outstanding</th></tr></thead><tbody>${rows}<tr class="tot"><td colspan="6">TOTAL</td><td>₹${fmt(tots.totTradingOut)}</td></tr></tbody></table>`);
+    const partyBlocks=outEntries.map(v=>{
+      const credit=v.openBills.map(b=>Math.max(0,b.billAmount-b.outstanding));
+      const rows=v.openBills.map((b,i)=>`<tr><td>${fmtD(b.date)}</td><td>${b.billNo}</td><td style="text-align:right">₹${fmt(b.billAmount)}</td><td style="text-align:right">₹${fmt(credit[i])}</td><td style="text-align:right;color:#E74C3C;font-weight:bold">₹${fmt(b.outstanding)}</td><td style="text-align:right">${b.days}</td></tr>`).join("");
+      return `<div class="party"><div class="party-name">Party : ${v.name}</div>
+        <table><thead><tr><th>Bill Date</th><th>Bill No</th><th style="text-align:right">Amount</th><th style="text-align:right">Credit</th><th style="text-align:right">Outstanding</th><th style="text-align:right">Days</th></tr></thead>
+        <tbody>${rows}<tr class="party-tot"><td colspan="4">Party Total</td><td style="text-align:right">₹${fmt(v.net)}</td><td></td></tr></tbody></table></div>`;
+    }).join("");
+    const style=`<style>.party{margin-bottom:22px;page-break-inside:avoid;}.party-name{font-weight:800;font-size:14px;color:#0F1923;margin-bottom:6px;padding-bottom:4px;border-bottom:1.5px solid #0F1923;}.party-tot td{background:#F0F4F8;font-weight:bold;border-top:1.5px solid #0F1923;}table th,table td{border:1px solid #ddd;}</style>`;
+    generatePDF("Outstanding Statement",`${style}${partyBlocks}<div class="tot" style="display:flex;justify-content:space-between;background:#0F1923;color:#E8C97E;padding:12px 16px;border-radius:6px;font-weight:bold;font-size:15px;margin-top:10px;"><span>TOTAL OUTSTANDING</span><span>₹${fmt(tots.totTradingOut)}</span></div>`);
   };
 
   const{totalCommission,commByCustomer}=useMemo(()=>calcFIFOCommission(filteredSales,filteredPay),[filteredSales,filteredPay]);
