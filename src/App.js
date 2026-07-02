@@ -142,7 +142,7 @@ export default function App(){
   const totTradingSale=data.tradingSales.reduce((a,s)=>a+(+s.amount||0),0);
   const totTradingPaid=data.tradingPayments.reduce((a,p)=>a+(+p.amount||0),0);
   const totTradingOut=Object.values(tradingOut).reduce((a,v)=>a+Math.max(0,v.due+(v.debit||0)-v.paid-(v.credit||0)),0);
-  const totComm=calcFIFOCommission(data.tradingSales,data.tradingPayments).totalCommission;
+  const totComm=calcFIFOCommission(data.tradingSales,data.tradingPayments,data.creditNotes||[],data.debitNotes||[]).totalCommission;
   const overdueCount=Object.values(tradingOut).filter(v=>Math.max(0,v.due+(v.debit||0)-v.paid-(v.credit||0))>0).length;
 
   const Sidebar=()=>(
@@ -244,7 +244,7 @@ function TradingTab({data,onAdd,onAddPay,onDel,tradingOut}){
   const totSales=data.tradingSales.reduce((a,s)=>a+(+s.amount||0),0);
   const totPaid=data.tradingPayments.reduce((a,p)=>a+(+p.amount||0),0);
   const totOut=Object.values(tradingOut).reduce((a,v)=>a+Math.max(0,v.due+(v.debit||0)-v.paid-(v.credit||0)),0);
-  const totComm=calcFIFOCommission(data.tradingSales,data.tradingPayments).totalCommission;
+  const totComm=calcFIFOCommission(data.tradingSales,data.tradingPayments,data.creditNotes||[],data.debitNotes||[]).totalCommission;
   return(<div>
     <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:12}}>
       <KpiCard icon="🏪" label="Total Sales" val={totSales} color={C.blue}/>
@@ -358,24 +358,18 @@ function OutstandingTab({tradingOut,data,onAddPay,generatePDF}){
   const total=entries.reduce((a,v)=>a+v.net,0);
 
   const buildWA=(v)=>{
-    const dateStr=new Date().toLocaleDateString("en-IN",{day:"2-digit",month:"short",year:"numeric"});
+    const fmtBillDate=(d)=>{const dt=new Date(d);const m=["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];return `${String(dt.getDate()).padStart(2,"0")}-${String(dt.getMonth()+1).padStart(2,"0")}-${String(dt.getFullYear()).slice(2)}`;};
     const fmtAmt=(n)=>Math.round(n).toLocaleString("en-IN");
-    const fmtBillDate=(d)=>{
-      const dt=new Date(d);
-      const months=["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
-      return `${String(dt.getDate()).padStart(2,"0")}-${months[dt.getMonth()]}-${String(dt.getFullYear()).slice(2)}`;
-    };
-    const divider="━━━━━━━━━━━━━━━━━━━━━━━━━";
-    const billLines=v.openBills.map((b,i)=>{
-      const bucketShort=b.days<=30?"0-30d":b.days<=60?"31-60d":b.days<=90?"61-90d":b.days<=120?"91-120d":"120+d";
-      const billNoClean=b.billNo==="—"?"—":String(b.billNo).replace(/IMP-/i,"");
-      return `📌 *Bill ${i+1}*\n`+
-        `   Date    : ${fmtBillDate(b.date)}\n`+
-        `   Bill No : ${billNoClean}\n`+
-        `   O/S     : ₹${fmtAmt(b.outstanding)}\n`+
-        `   Ageing  : ${b.days} Days (${bucketShort})`;
-    }).join("\n\n");
-    return `🏢 *Navkar Fabrics*\n📅 ${dateStr}\n${divider}\n\nDear *${v.name}*,\n\nYour outstanding details:\n\n${billLines}\n\n${divider}\n💰 *Total O/S : ₹${fmt(v.net)}*\n${divider}\n\nPlease arrange payment at the earliest.\n\nThank You 🙏\n*Navkar Fabrics*`;
+    const divider="─────────────────────────────────────────────";
+    const header=`*Bill Date  | Bill No |    O/S    | Days*`;
+    const billRows=v.openBills.map(b=>{
+      const billNoClean=String(b.billNo).replace(/IMP-/i,"");
+      const dt=fmtBillDate(b.date);
+      const os=fmtAmt(b.outstanding);
+      const days=`${b.days} Days`;
+      return `${dt} |  ${billNoClean.padEnd(6," ")}  | ${os.padStart(9," ")} | ${days}`;
+    }).join("\n");
+    return `Dear *${v.name}*,\n\nPlease arrange payment of the following outstanding:\n\n${header}\n${divider}\n${billRows}\n${divider}\n\n*Total Outstanding: Rs ${fmtAmt(v.net)}*\n\nKindly ignore if already paid.\n\nRegards\n*Navkar Fabrics*`;
   };
 
   const doPDF=()=>{
@@ -712,24 +706,36 @@ function AnalyticsTab({data,tradingOut}){
 }
 
 // ─── COMMISSION TAB ──────────────────────────────────────────────
-function calcFIFOCommission(tradingSales,tradingPayments){
+function calcFIFOCommission(tradingSales,tradingPayments,creditNotes=[],debitNotes=[]){
   const customerMap={};
   tradingSales.forEach(s=>{
     const cid=s.customerName;
-    if(!customerMap[cid])customerMap[cid]={sales:[],totalPaid:0};
+    if(!customerMap[cid])customerMap[cid]={sales:[],totalPaid:0,creditAdjusted:0};
     customerMap[cid].sales.push({...s});
   });
   tradingPayments.forEach(p=>{
     const cid=p.customerName;
-    if(!customerMap[cid])customerMap[cid]={sales:[],totalPaid:0};
+    if(!customerMap[cid])customerMap[cid]={sales:[],totalPaid:0,creditAdjusted:0};
     customerMap[cid].totalPaid+=+p.amount||0;
+  });
+  // Credit Notes & Debit Notes reduce outstanding but NOT via payment — exclude from commission pool
+  creditNotes.forEach(n=>{
+    const cid=n.customerName;
+    if(!customerMap[cid])customerMap[cid]={sales:[],totalPaid:0,creditAdjusted:0};
+    customerMap[cid].creditAdjusted+=+n.amount||0;
+  });
+  debitNotes.forEach(n=>{
+    const cid=n.customerName;
+    if(!customerMap[cid])customerMap[cid]={sales:[],totalPaid:0,creditAdjusted:0};
+    // Debit notes increase outstanding — no adjustment needed here
   });
   let totalCommission=0;
   const commDetails=[];
   const commByCustomer={};
   Object.entries(customerMap).forEach(([cname,cdata])=>{
     const sales=[...cdata.sales].sort((a,b)=>new Date(a.date)-new Date(b.date));
-    let remainingPayment=cdata.totalPaid;
+    // Commission only on CASH payments — exclude credit/debit note adjustments
+    let remainingPayment=cdata.totalPaid; // pure cash received only
     sales.forEach(sale=>{
       const saleAmt=+sale.amount||0;
       const qty=+sale.meters||+sale.qty||0;
@@ -752,7 +758,7 @@ function calcFIFOCommission(tradingSales,tradingPayments){
 
 function CommissionTab({data,generatePDF}){
   const[view,setView]=useState("summary");
-  const{totalCommission,commDetails,commByCustomer}=calcFIFOCommission(data.tradingSales,data.tradingPayments);
+  const{totalCommission,commDetails,commByCustomer}=calcFIFOCommission(data.tradingSales,data.tradingPayments,data.creditNotes||[],data.debitNotes||[]);
   const commList=Object.values(commByCustomer).sort((a,b)=>b.commission-a.commission);
   const detailList=[...commDetails].sort((a,b)=>new Date(b.date)-new Date(a.date));
   const totalBills=commList.reduce((a,v)=>a+v.bills,0);
@@ -934,10 +940,29 @@ function ReportsTab({data,tradingOut,tots,generatePDF}){
     </div>
   );
 
+  const[salesView,setSalesView]=useState("date"); // date | customer | product
+
   const doPDFSales=()=>{
-    const rows=[...filteredSales].sort((a,b)=>new Date(b.date)-new Date(a.date)).map(s=>`<tr><td>${fmtD(s.date)}</td><td>${s.billNo||"—"}</td><td>${s.customerName}</td><td>${s.productName||"—"}</td><td style="text-align:right">${fmt(s.meters)} m</td><td style="text-align:right">₹${fmt(s.rate)}</td><td style="text-align:right;font-weight:bold">₹${fmt(s.amount)}</td></tr>`).join("");
+    const pdfStyle=`<style>table{width:100%;border-collapse:collapse;}th{background:#0F1923;color:#E8C97E;padding:8px 10px;text-align:left;font-size:12px;border:1px solid #0F1923;}td{padding:7px 10px;border:1px solid #ddd;font-size:12px;}tr:nth-child(even){background:#f9f9f9;}.tot td{background:#0F1923;color:#E8C97E;font-weight:bold;border:none;}.grp-hdr td{background:#E8EDF4;font-weight:800;color:#0F1923;}</style>`;
     const total=filteredSales.reduce((a,s)=>a+(+s.amount||0),0);
-    generatePDF(`Sales Register${fy!==ALL_FY?" — FY "+fy:""}`,`<table><thead><tr><th>Date</th><th>Bill No</th><th>Customer</th><th>Product</th><th>Qty (m)</th><th>Rate</th><th>Amount</th></tr></thead><tbody>${rows}<tr class="tot"><td colspan="6">TOTAL</td><td>₹${fmt(total)}</td></tr></tbody></table>`);
+    if(salesView==="date"){
+      const rows=[...filteredSales].sort((a,b)=>new Date(b.date)-new Date(a.date)).map(s=>`<tr><td>${fmtD(s.date)}</td><td>${s.billNo||"—"}</td><td>${s.customerName}</td><td>${s.productName||"—"}</td><td style="text-align:right">${fmt(s.meters)} m</td><td style="text-align:right">₹${fmt(s.rate)}</td><td style="text-align:right;font-weight:bold">₹${fmt(s.amount)}</td></tr>`).join("");
+      generatePDF(`Sales Register — Date-wise${fy!==ALL_FY?" (FY "+fy+")":""}`,`${pdfStyle}<table><thead><tr><th>Date</th><th>Bill No</th><th>Customer</th><th>Product</th><th style="text-align:right">Qty (m)</th><th style="text-align:right">Rate</th><th style="text-align:right">Amount</th></tr></thead><tbody>${rows}<tr class="tot"><td colspan="6">TOTAL</td><td style="text-align:right">₹${fmt(total)}</td></tr></tbody></table>`);
+    } else if(salesView==="customer"){
+      const custMap={};filteredSales.forEach(s=>{if(!custMap[s.customerName])custMap[s.customerName]={name:s.customerName,sales:[],total:0};custMap[s.customerName].sales.push(s);custMap[s.customerName].total+=+s.amount||0;});
+      const blocks=Object.values(custMap).sort((a,b)=>b.total-a.total).map(c=>{
+        const rows=c.sales.sort((a,b)=>new Date(a.date)-new Date(b.date)).map(s=>`<tr><td>${fmtD(s.date)}</td><td>${s.billNo||"—"}</td><td>${s.productName||"—"}</td><td style="text-align:right">${fmt(s.meters)} m</td><td style="text-align:right">₹${fmt(s.rate)}</td><td style="text-align:right;font-weight:bold">₹${fmt(s.amount)}</td></tr>`).join("");
+        return `<tr class="grp-hdr"><td colspan="5"><b>${c.name}</b></td><td style="text-align:right;font-weight:bold">₹${fmt(c.total)}</td></tr>${rows}`;
+      }).join("");
+      generatePDF(`Sales Register — Customer-wise${fy!==ALL_FY?" (FY "+fy+")":""}`,`${pdfStyle}<table><thead><tr><th>Date</th><th>Bill No</th><th>Product</th><th style="text-align:right">Qty (m)</th><th style="text-align:right">Rate</th><th style="text-align:right">Amount</th></tr></thead><tbody>${blocks}<tr class="tot"><td colspan="5">TOTAL</td><td style="text-align:right">₹${fmt(total)}</td></tr></tbody></table>`);
+    } else {
+      const prodMap={};filteredSales.forEach(s=>{const p=s.productName||"Unknown";if(!prodMap[p])prodMap[p]={name:p,sales:[],total:0,meters:0};prodMap[p].sales.push(s);prodMap[p].total+=+s.amount||0;prodMap[p].meters+=+s.meters||0;});
+      const blocks=Object.values(prodMap).sort((a,b)=>b.total-a.total).map(p=>{
+        const rows=p.sales.sort((a,b)=>new Date(a.date)-new Date(b.date)).map(s=>`<tr><td>${fmtD(s.date)}</td><td>${s.billNo||"—"}</td><td>${s.customerName}</td><td style="text-align:right">${fmt(s.meters)} m</td><td style="text-align:right">₹${fmt(s.rate)}</td><td style="text-align:right;font-weight:bold">₹${fmt(s.amount)}</td></tr>`).join("");
+        return `<tr class="grp-hdr"><td colspan="4"><b>${p.name}</b> — ${fmt(p.meters)} m</td><td style="text-align:right;font-weight:bold">₹${fmt(p.total)}</td></tr>${rows}`;
+      }).join("");
+      generatePDF(`Sales Register — Product-wise${fy!==ALL_FY?" (FY "+fy+")":""}`,`${pdfStyle}<table><thead><tr><th>Date</th><th>Bill No</th><th>Customer</th><th style="text-align:right">Qty (m)</th><th style="text-align:right">Rate</th><th style="text-align:right">Amount</th></tr></thead><tbody>${blocks}<tr class="tot"><td colspan="4">TOTAL</td><td style="text-align:right">₹${fmt(total)}</td></tr></tbody></table>`);
+    }
   };
 
   // Outstanding is always current — no FY filter (it's live balance)
@@ -964,11 +989,12 @@ function ReportsTab({data,tradingOut,tots,generatePDF}){
     generatePDF("Outstanding Statement",`${style}${partyBlocks}<div class="tot" style="display:flex;justify-content:space-between;background:#0F1923;color:#E8C97E;padding:12px 16px;border-radius:6px;font-weight:bold;font-size:15px;margin-top:10px;"><span>TOTAL OUTSTANDING</span><span>₹${fmt(tots.totTradingOut)}</span></div>`);
   };
 
-  const{totalCommission,commByCustomer}=useMemo(()=>calcFIFOCommission(filteredSales,filteredPay),[filteredSales,filteredPay]);
+  const{totalCommission,commByCustomer}=useMemo(()=>calcFIFOCommission(filteredSales,filteredPay,data.creditNotes||[],data.debitNotes||[]),[filteredSales,filteredPay]);
   const commList=Object.values(commByCustomer).sort((a,b)=>b.commission-a.commission);
   const doPDFComm=()=>{
-    const rows=commList.map((v,i)=>`<tr><td>${i+1}</td><td>${v.name}</td><td style="text-align:right">${v.bills}</td><td style="text-align:right">${fmt(v.meters)} m</td><td style="text-align:right;color:#8E44AD;font-weight:bold">₹${fmt(v.commission)}</td></tr>`).join("");
-    generatePDF(`Commission Statement${fy!==ALL_FY?" — FY "+fy:""}`,`<table><thead><tr><th>#</th><th>Customer</th><th>Bills</th><th>Meters</th><th>Commission</th></tr></thead><tbody>${rows}<tr class="tot"><td colspan="4">TOTAL</td><td>₹${fmt(totalCommission)}</td></tr></tbody></table>`);
+    const pdfStyle=`<style>table{width:100%;border-collapse:collapse;}th{background:#0F1923;color:#E8C97E;padding:8px 10px;text-align:left;font-size:12px;border:1px solid #0F1923;}td{padding:7px 10px;border:1px solid #ddd;font-size:12px;}tr:nth-child(even){background:#f9f9f9;}.tot td{background:#0F1923;color:#E8C97E;font-weight:bold;border:none;}</style>`;
+    const rows=commList.map((v,i)=>`<tr><td style="text-align:center">${i+1}</td><td>${v.name}</td><td style="text-align:right">${v.bills}</td><td style="text-align:right">${fmt(v.meters)} m</td><td style="text-align:right;color:#8E44AD;font-weight:bold">₹${fmt(v.commission)}</td></tr>`).join("");
+    generatePDF(`Commission Statement${fy!==ALL_FY?" — FY "+fy:""}`,`${pdfStyle}<table><thead><tr><th style="text-align:center">#</th><th>Customer</th><th style="text-align:right">Bills Cleared</th><th style="text-align:right">Meters</th><th style="text-align:right">Commission</th></tr></thead><tbody>${rows}<tr class="tot"><td colspan="4" style="text-align:right">TOTAL</td><td style="text-align:right">₹${fmt(totalCommission)}</td></tr></tbody></table>`);
   };
 
   const totSales=filteredSales.reduce((a,s)=>a+(+s.amount||0),0);
@@ -980,20 +1006,28 @@ function ReportsTab({data,tradingOut,tots,generatePDF}){
 
     {rep==="sales"&&<>
       <FYPicker/>
+      {/* View selector */}
+      <div style={{display:"flex",background:"#fff",borderRadius:11,overflow:"hidden",border:`1px solid ${C.border}`,marginBottom:10}}>
+        {[{v:"date",l:"📅 Date-wise"},{v:"customer",l:"👥 Customer-wise"},{v:"product",l:"📦 Product-wise"}].map(o=>(
+          <button key={o.v} onClick={()=>setSalesView(o.v)} style={{flex:1,padding:"11px 4px",fontSize:11.5,fontWeight:salesView===o.v?700:500,color:salesView===o.v?"#E8C97E":C.muted,background:salesView===o.v?C.navy:"transparent",border:"none",cursor:"pointer",minHeight:44}}>{o.l}</button>
+        ))}
+      </div>
       <div style={{display:"flex",gap:8,marginBottom:10}}>
-        <button onClick={()=>exportCSV([["Date","Bill No","Customer","Product","Qty(m)","Rate","Amount"],...filteredSales.map(s=>[fmtD(s.date),s.billNo||"",s.customerName,s.productName,s.meters,s.rate,s.amount])],`SalesRegister_${fy.replace(/[^0-9\-]/g,"")}_${today()}.csv`)} style={{background:C.green,color:"#fff",border:"none",borderRadius:9,padding:"9px 15px",fontSize:12.5,fontWeight:700,cursor:"pointer",minHeight:40}}>📥 CSV</button>
+        <button onClick={()=>exportCSV([["Date","Bill No","Customer","Product","Qty(m)","Rate","Amount"],...filteredSales.map(s=>[fmtD(s.date),s.billNo||"",s.customerName,s.productName,s.meters,s.rate,s.amount])],`SalesRegister_${salesView}_${today()}.csv`)} style={{background:C.green,color:"#fff",border:"none",borderRadius:9,padding:"9px 15px",fontSize:12.5,fontWeight:700,cursor:"pointer",minHeight:40}}>📥 CSV</button>
         <button onClick={doPDFSales} style={{background:C.red,color:"#fff",border:"none",borderRadius:9,padding:"9px 15px",fontSize:12.5,fontWeight:700,cursor:"pointer",minHeight:40}}>🖨️ PDF</button>
       </div>
       <div style={{background:C.card,borderRadius:12,padding:14,marginBottom:12,borderLeft:`4px solid ${C.blue}`}}>
         <Mute>Total Sales {fy!==ALL_FY?`— FY ${fy}`:""} ({filteredSales.length} bills)</Mute>
         <div style={{fontSize:22,fontWeight:900,color:C.blue}}>₹{fmt(totSales)}</div>
       </div>
-      {[...filteredSales].sort((a,b)=>new Date(b.date)-new Date(a.date)).map(s=>(
+
+      {/* Date-wise */}
+      {salesView==="date"&&[...filteredSales].sort((a,b)=>new Date(b.date)-new Date(a.date)).map(s=>(
         <div key={s.id} style={{background:C.card,borderRadius:11,padding:"12px 14px",marginBottom:8,boxShadow:"0 1px 6px rgba(0,0,0,0.05)"}}>
           <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start"}}>
             <div style={{flex:1,paddingRight:10}}>
               <B style={{fontSize:13.5,color:C.navy}}>{s.customerName}</B>
-              {s.billNo&&<Mute>📋 Bill No : {s.billNo}</Mute>}
+              {s.billNo&&<Mute>📋 {s.billNo}</Mute>}
               <Mute>📅 {fmtD(s.date)}</Mute>
               {s.productName&&<Mute>📦 {s.productName}</Mute>}
               <Mute>📏 {fmt(s.meters)} m @ ₹{fmt(s.rate)}/m</Mute>
@@ -1002,6 +1036,52 @@ function ReportsTab({data,tradingOut,tots,generatePDF}){
           </div>
         </div>
       ))}
+
+      {/* Customer-wise */}
+      {salesView==="customer"&&(()=>{
+        const custMap={};
+        filteredSales.forEach(s=>{if(!custMap[s.customerName])custMap[s.customerName]={name:s.customerName,sales:[],total:0};custMap[s.customerName].sales.push(s);custMap[s.customerName].total+=+s.amount||0;});
+        return Object.values(custMap).sort((a,b)=>b.total-a.total).map(c=>(
+          <div key={c.name} style={{background:C.card,borderRadius:13,marginBottom:12,overflow:"hidden",boxShadow:"0 1px 8px rgba(0,0,0,0.07)"}}>
+            <div style={{background:`linear-gradient(90deg,${C.navyMid},${C.navy})`,padding:"11px 14px",display:"flex",justifyContent:"space-between"}}>
+              <B style={{color:"#fff",fontSize:13}}>{c.name}</B>
+              <span style={{fontWeight:900,color:C.gold}}>₹{fmt(c.total)}</span>
+            </div>
+            {c.sales.sort((a,b)=>new Date(b.date)-new Date(a.date)).map((s,i)=>(
+              <div key={s.id} style={{padding:"9px 14px",borderBottom:`1px solid ${C.border}`,background:i%2===0?"#fff":"#FAFBFC",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+                <div>
+                  <div style={{fontSize:12.5,fontWeight:600,color:C.navy}}>{s.billNo||"—"} · {fmtD(s.date)}</div>
+                  <div style={{fontSize:11.5,color:C.muted}}>{s.productName} · {fmt(s.meters)} m @ ₹{fmt(s.rate)}/m</div>
+                </div>
+                <span style={{fontWeight:800,color:C.blue,fontSize:13}}>₹{fmt(s.amount)}</span>
+              </div>
+            ))}
+          </div>
+        ));
+      })()}
+
+      {/* Product-wise */}
+      {salesView==="product"&&(()=>{
+        const prodMap={};
+        filteredSales.forEach(s=>{const p=s.productName||"Unknown";if(!prodMap[p])prodMap[p]={name:p,sales:[],total:0,meters:0};prodMap[p].sales.push(s);prodMap[p].total+=+s.amount||0;prodMap[p].meters+=+s.meters||0;});
+        return Object.values(prodMap).sort((a,b)=>b.total-a.total).map(p=>(
+          <div key={p.name} style={{background:C.card,borderRadius:13,marginBottom:12,overflow:"hidden",boxShadow:"0 1px 8px rgba(0,0,0,0.07)"}}>
+            <div style={{background:`linear-gradient(90deg,${C.teal},#117A65)`,padding:"11px 14px",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+              <div><B style={{color:"#fff",fontSize:13}}>{p.name}</B><div style={{fontSize:11,color:"rgba(255,255,255,0.7)",marginTop:2}}>{fmt(p.meters)} meters total</div></div>
+              <span style={{fontWeight:900,color:"#fff"}}>₹{fmt(p.total)}</span>
+            </div>
+            {p.sales.sort((a,b)=>new Date(b.date)-new Date(a.date)).map((s,i)=>(
+              <div key={s.id} style={{padding:"9px 14px",borderBottom:`1px solid ${C.border}`,background:i%2===0?"#fff":"#FAFBFC",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+                <div>
+                  <div style={{fontSize:12.5,fontWeight:600,color:C.navy}}>{s.customerName}</div>
+                  <div style={{fontSize:11.5,color:C.muted}}>{s.billNo||"—"} · {fmtD(s.date)} · {fmt(s.meters)} m @ ₹{fmt(s.rate)}/m</div>
+                </div>
+                <span style={{fontWeight:800,color:C.teal,fontSize:13}}>₹{fmt(s.amount)}</span>
+              </div>
+            ))}
+          </div>
+        ));
+      })()}
     </>}
 
     {rep==="outstanding"&&<>
