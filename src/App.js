@@ -93,7 +93,7 @@ export default function App(){
 
   const showToast=(msg,err)=>{setToast({msg,err});setTimeout(()=>setToast(null),3000);};
   const add=(section,rec)=>{setData(p=>({...p,[section]:[...p[section],{...rec,id:uid()}]}));showToast("Saved successfully.");setModal(null);};
-  const del=(section,id)=>{setData(p=>({...p,[section]:p[section].filter(r=>r.id!==id)}));showToast("Deleted.");};
+  const del=(section,id)=>{if(!window.confirm("Are you sure you want to delete this record? This action cannot be undone."))return;setData(p=>({...p,[section]:p[section].filter(r=>r.id!==id)}));showToast("Deleted.");};
   const updateMaster=(section,updated)=>{setData(p=>({...p,[section]:p[section].map(r=>r.id===updated.id?updated:r)}));showToast("Updated.");setModal(null);};
 
   const handleExcelImport=(e)=>{
@@ -174,8 +174,8 @@ export default function App(){
       </div>
       <div className="main" style={{marginLeft:0,padding:"18px 16px 40px",maxWidth:860}}>
         {tab==="Dashboard"  &&<DashboardTab data={data} tots={{totTradingSale,totTradingPaid,totTradingOut,totComm}} onNav={setTab} tradingOut={tradingOut}/>}
-        {tab==="Trading"    &&<TradingTab data={data} onAdd={()=>setModal({type:"sale"})} onAddPay={()=>setModal({type:"payment"})} onDel={del} tradingOut={tradingOut}/>}
-        {tab==="Returns"    &&<ReturnsTab data={data} onAddDebit={()=>setModal({type:"debit"})} onAddCredit={()=>setModal({type:"credit"})} onDel={del}/>}
+        {tab==="Trading"    &&<TradingTab data={data} onAdd={()=>setModal({type:"sale"})} onAddPay={()=>setModal({type:"payment"})} onDel={del} onEdit={(type,rec)=>setModal({type:`edit-${type}`,rec})} tradingOut={tradingOut}/>}
+        {tab==="Returns"    &&<ReturnsTab data={data} onAddDebit={()=>setModal({type:"debit"})} onAddCredit={()=>setModal({type:"credit"})} onDel={del} onEdit={(type,rec)=>setModal({type:`edit-${type}`,rec})}/>}
         {tab==="Outstanding"&&<OutstandingTab tradingOut={tradingOut} data={data} onAddPay={(pre)=>setModal({type:"payment",preCustomer:pre})} generatePDF={generatePDF}/>}
         {tab==="Aging"      &&<AgingTab data={data} generatePDF={generatePDF}/>}
         {tab==="Analytics"  &&<AnalyticsTab data={data} tradingOut={tradingOut}/>}
@@ -187,6 +187,10 @@ export default function App(){
       {modal?.type==="payment"       &&<PaymentModal data={data} onSave={r=>add("tradingPayments",r)} onClose={()=>setModal(null)} preCustomer={modal.preCustomer}/>}
       {modal?.type==="debit"         &&<DebitModal   data={data} onSave={r=>add("debitNotes",r)}      onClose={()=>setModal(null)}/>}
       {modal?.type==="credit"        &&<CreditModal  data={data} onSave={r=>add("creditNotes",r)}     onClose={()=>setModal(null)}/>}
+      {modal?.type==="edit-sale"     &&<SaleModal    data={data} onSave={r=>updateMaster("tradingSales",{...modal.rec,...r})}    onClose={()=>setModal(null)} initial={modal.rec}/>}
+      {modal?.type==="edit-payment"  &&<PaymentModal data={data} onSave={r=>updateMaster("tradingPayments",{...modal.rec,...r})} onClose={()=>setModal(null)} initial={modal.rec}/>}
+      {modal?.type==="edit-debit"    &&<DebitModal   data={data} onSave={r=>updateMaster("debitNotes",{...modal.rec,...r})}      onClose={()=>setModal(null)} initial={modal.rec}/>}
+      {modal?.type==="edit-credit"   &&<CreditModal  data={data} onSave={r=>updateMaster("creditNotes",{...modal.rec,...r})}     onClose={()=>setModal(null)} initial={modal.rec}/>}
       {modal?.type==="customer"      &&<CustomerModal onSave={r=>add("customers",r)}                  onClose={()=>setModal(null)}/>}
       {modal?.type==="supplier"      &&<SupplierModal onSave={r=>add("suppliers",r)}                  onClose={()=>setModal(null)}/>}
       {modal?.type==="product"       &&<ProductModal  data={data} onSave={r=>add("products",r)}       onClose={()=>setModal(null)}/>}
@@ -237,7 +241,7 @@ function DashboardTab({data,tots,onNav,tradingOut}){
 }
 
 // ─── TRADING TAB ─────────────────────────────────────────────────
-function TradingTab({data,onAdd,onAddPay,onDel,tradingOut}){
+function TradingTab({data,onAdd,onAddPay,onDel,onEdit,tradingOut}){
   const[view,setView]=useState("sales");const[search,setSearch]=useState("");
   const sales=[...data.tradingSales].filter(s=>!search||[s.customerName,s.productName,s.billNo].some(x=>x?.toLowerCase().includes(search.toLowerCase()))).sort((a,b)=>new Date(b.date)-new Date(a.date));
   const payments=[...data.tradingPayments].sort((a,b)=>new Date(b.date)-new Date(a.date));
@@ -262,7 +266,10 @@ function TradingTab({data,onAdd,onAddPay,onDel,tradingOut}){
         {s.billNo&&<Mute>Bill No: {s.billNo}</Mute>}
         <Mute>{s.productName} · {s.supplierName}</Mute>
         <Mute>{fmt(s.meters)} m @ ₹{fmt(s.rate)}/m · {fmtD(s.date)}</Mute>
-        <button onClick={()=>onDel("tradingSales",s.id)} style={{marginTop:8,background:"#FEE8E8",color:C.red,border:"none",borderRadius:8,padding:"7px 14px",fontSize:12,fontWeight:700,cursor:"pointer"}}>Delete</button>
+        <div style={{display:"flex",gap:8,marginTop:8}}>
+          <button onClick={()=>onEdit("sale",s)} style={{background:"#EAF4FC",color:C.blue,border:"none",borderRadius:8,padding:"7px 14px",fontSize:12,fontWeight:700,cursor:"pointer"}}>✏️ Edit</button>
+          <button onClick={()=>onDel("tradingSales",s.id)} style={{background:"#FEE8E8",color:C.red,border:"none",borderRadius:8,padding:"7px 14px",fontSize:12,fontWeight:700,cursor:"pointer"}}>🗑️ Delete</button>
+        </div>
       </div>))}
     </>}
     {view==="payments"&&<>
@@ -271,16 +278,18 @@ function TradingTab({data,onAdd,onAddPay,onDel,tradingOut}){
         <Row><B>{p.customerName}</B><span style={{fontWeight:900,color:C.green}}>₹{fmt(p.amount)}</span></Row>
         {p.billNo&&<Mute>Bill No: {p.billNo}</Mute>}
         <Mute>{p.mode} · {fmtD(p.date)}</Mute>
-        {p.commissionEarned>0&&<Mute style={{color:C.purple}}>Commission: ₹{fmt(p.commissionEarned)}</Mute>}
         {p.remarks&&<Mute>{p.remarks}</Mute>}
-        <button onClick={()=>onDel("tradingPayments",p.id)} style={{marginTop:8,background:"#FEE8E8",color:C.red,border:"none",borderRadius:8,padding:"7px 14px",fontSize:12,fontWeight:700,cursor:"pointer"}}>Delete</button>
+        <div style={{display:"flex",gap:8,marginTop:8}}>
+          <button onClick={()=>onEdit("payment",p)} style={{background:"#EAF4FC",color:C.blue,border:"none",borderRadius:8,padding:"7px 14px",fontSize:12,fontWeight:700,cursor:"pointer"}}>✏️ Edit</button>
+          <button onClick={()=>onDel("tradingPayments",p.id)} style={{background:"#FEE8E8",color:C.red,border:"none",borderRadius:8,padding:"7px 14px",fontSize:12,fontWeight:700,cursor:"pointer"}}>🗑️ Delete</button>
+        </div>
       </div>))}
     </>}
   </div>);
 }
 
 // ─── RETURNS TAB ─────────────────────────────────────────────────
-function ReturnsTab({data,onAddDebit,onAddCredit,onDel}){
+function ReturnsTab({data,onAddDebit,onAddCredit,onDel,onEdit}){
   const[view,setView]=useState("credit");
   const debitNotes=data.debitNotes||[];
   const creditNotes=data.creditNotes||[];
@@ -310,7 +319,10 @@ function ReturnsTab({data,onAddDebit,onAddCredit,onDel}){
           <Mute>{fmtD(n.date)}</Mute>
           {n.remarks&&<Mute>{n.remarks}</Mute>}
           <div style={{background:"#E8F8F5",borderRadius:8,padding:"7px 10px",marginTop:8,fontSize:11.5,color:C.teal,fontWeight:600}}>Reduces customer outstanding</div>
-          <button onClick={()=>onDel("creditNotes",n.id)} style={{marginTop:8,background:"#FEE8E8",color:C.red,border:"none",borderRadius:8,padding:"7px 14px",fontSize:12,fontWeight:700,cursor:"pointer"}}>Delete</button>
+          <div style={{display:"flex",gap:8,marginTop:8}}>
+            <button onClick={()=>onEdit("credit",n)} style={{background:"#EAF4FC",color:C.blue,border:"none",borderRadius:8,padding:"7px 14px",fontSize:12,fontWeight:700,cursor:"pointer"}}>✏️ Edit</button>
+            <button onClick={()=>onDel("creditNotes",n.id)} style={{background:"#FEE8E8",color:C.red,border:"none",borderRadius:8,padding:"7px 14px",fontSize:12,fontWeight:700,cursor:"pointer"}}>🗑️ Delete</button>
+          </div>
         </div>))}
       </>}
       {view==="debit"&&<>
@@ -321,7 +333,10 @@ function ReturnsTab({data,onAddDebit,onAddCredit,onDel}){
           <Mute>{fmtD(n.date)}</Mute>
           {n.remarks&&<Mute>{n.remarks}</Mute>}
           <div style={{background:"#FDEDEC",borderRadius:8,padding:"7px 10px",marginTop:8,fontSize:11.5,color:"#C0392B",fontWeight:600}}>Increases customer outstanding</div>
-          <button onClick={()=>onDel("debitNotes",n.id)} style={{marginTop:8,background:"#FEE8E8",color:C.red,border:"none",borderRadius:8,padding:"7px 14px",fontSize:12,fontWeight:700,cursor:"pointer"}}>Delete</button>
+          <div style={{display:"flex",gap:8,marginTop:8}}>
+            <button onClick={()=>onEdit("debit",n)} style={{background:"#EAF4FC",color:C.blue,border:"none",borderRadius:8,padding:"7px 14px",fontSize:12,fontWeight:700,cursor:"pointer"}}>✏️ Edit</button>
+            <button onClick={()=>onDel("debitNotes",n.id)} style={{background:"#FEE8E8",color:C.red,border:"none",borderRadius:8,padding:"7px 14px",fontSize:12,fontWeight:700,cursor:"pointer"}}>🗑️ Delete</button>
+          </div>
         </div>))}
       </>}
     </div>
@@ -358,18 +373,14 @@ function OutstandingTab({tradingOut,data,onAddPay,generatePDF}){
   const total=entries.reduce((a,v)=>a+v.net,0);
 
   const buildWA=(v)=>{
-    const fmtBillDate=(d)=>{const dt=new Date(d);const m=["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];return `${String(dt.getDate()).padStart(2,"0")}-${String(dt.getMonth()+1).padStart(2,"0")}-${String(dt.getFullYear()).slice(2)}`;};
-    const fmtAmt=(n)=>Math.round(n).toLocaleString("en-IN");
-    const divider="─────────────────────────────────────────────";
-    const header=`*Bill Date  | Bill No |    O/S    | Days*`;
-    const billRows=v.openBills.map(b=>{
+    const nums=["1️⃣","2️⃣","3️⃣","4️⃣","5️⃣","6️⃣","7️⃣","8️⃣","9️⃣","🔟"];
+    const fmtBillDate=(d)=>{const dt=new Date(d);const m=["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];return `${String(dt.getDate()).padStart(2,"0")}-${m[dt.getMonth()]}-${String(dt.getFullYear()).slice(2)}`;};
+    const fmtAmt=(n)=>Number(Math.round(n)).toLocaleString("en-IN");
+    const billLines=v.openBills.map((b,i)=>{
       const billNoClean=String(b.billNo).replace(/IMP-/i,"");
-      const dt=fmtBillDate(b.date);
-      const os=fmtAmt(b.outstanding);
-      const days=`${b.days} Days`;
-      return `${dt} |  ${billNoClean.padEnd(6," ")}  | ${os.padStart(9," ")} | ${days}`;
-    }).join("\n");
-    return `Dear *${v.name}*,\n\nPlease arrange payment of the following outstanding:\n\n${header}\n${divider}\n${billRows}\n${divider}\n\n*Total Outstanding: Rs ${fmtAmt(v.net)}*\n\nKindly ignore if already paid.\n\nRegards\n*Navkar Fabrics*`;
+      return `${nums[i]||`${i+1}.`} Bill No: ${billNoClean}\n   Date: ${fmtBillDate(b.date)}\n   O/S: *₹${fmtAmt(b.outstanding)}*\n   Age: ${b.days} Days`;
+    }).join("\n\n");
+    return `🏢 *Navkar Fabrics*\n\nDear *${v.name}*,\n\nOutstanding payment reminder:\n\n${billLines}\n\n💰 *Total O/S: ₹${fmtAmt(v.net)}*\n\nKindly ignore if already paid.\n\nRegards\nNavkar Fabrics`;
   };
 
   const doPDF=()=>{
@@ -1161,12 +1172,12 @@ function ReportsTab({data,tradingOut,tots,generatePDF}){
 }
 
 // ─── MODALS ──────────────────────────────────────────────────────
-function SaleModal({data,onSave,onClose}){
-  const[f,sf]=useState({date:today(),billNo:"",customerName:"",productName:"",supplierName:"",meters:"",rate:"",amount:"",remarks:""});
+function SaleModal({data,onSave,onClose,initial}){
+  const[f,sf]=useState(initial||{date:today(),billNo:"",customerName:"",productName:"",supplierName:"",meters:"",rate:"",amount:"",remarks:""});
   const s=(k,v)=>sf(p=>({...p,[k]:v}));
   const selectProd=(name)=>{const p=data.products.find(p=>p.name===name);sf(pr=>({...pr,productName:name,supplierName:p?.supplierName||pr.supplierName}));};
-  useEffect(()=>{if(f.meters&&f.rate)s("amount",(parseFloat(f.meters)*parseFloat(f.rate)).toFixed(2));},[f.meters,f.rate]);
-  return(<ModalBase title="Add Trading Sale" onClose={onClose}>
+  useEffect(()=>{if(f.meters&&f.rate&&!initial)s("amount",(parseFloat(f.meters)*parseFloat(f.rate)).toFixed(2));},[f.meters,f.rate]);
+  return(<ModalBase title={initial?"Edit Sale":"Add Trading Sale"} onClose={onClose}>
     <F label="Date *"><input type="date" value={f.date} onChange={e=>s("date",e.target.value)} style={IS}/></F>
     <F label="Bill No"><input value={f.billNo} onChange={e=>s("billNo",e.target.value)} placeholder="Invoice / Bill number" style={IS}/></F>
     <F label="Customer *"><SmartInput value={f.customerName} onChange={v=>s("customerName",v)} placeholder="Customer name" list={data.customers.map(c=>c.name)} idPrefix="sl-c"/></F>
@@ -1182,31 +1193,28 @@ function SaleModal({data,onSave,onClose}){
   </ModalBase>);
 }
 
-function PaymentModal({data,onSave,onClose,preCustomer}){
-  const[f,sf]=useState({date:today(),billNo:"",customerName:preCustomer||"",amount:"",mode:"NEFT",remarks:""});
+function PaymentModal({data,onSave,onClose,preCustomer,initial}){
+  const[f,sf]=useState(initial||{date:today(),billNo:"",customerName:preCustomer||"",amount:"",mode:"NEFT",remarks:""});
   const s=(k,v)=>sf(p=>({...p,[k]:v}));
   const custBills=data.tradingSales.filter(x=>x.customerName===f.customerName&&x.billNo).map(x=>x.billNo);
   const uniqueBills=[...new Set(custBills)];
   const selectBill=(bn)=>{const sale=data.tradingSales.find(x=>x.billNo===bn&&x.customerName===f.customerName);sf(p=>({...p,billNo:bn,amount:sale?sale.amount:p.amount}));};
-  const linkedSale=f.billNo?data.tradingSales.find(x=>x.billNo===f.billNo&&x.customerName===f.customerName):null;
-  const commissionEarned=linkedSale?(+linkedSale.meters||0)*1.5:0;
-  return(<ModalBase title="Record Payment" onClose={onClose}>
+  return(<ModalBase title={initial?"Edit Payment":"Record Payment"} onClose={onClose}>
     <F label="Date *"><input type="date" value={f.date} onChange={e=>s("date",e.target.value)} style={IS}/></F>
     <F label="Customer *"><SmartInput value={f.customerName} onChange={v=>sf(p=>({...p,customerName:v,billNo:""}))} placeholder="Customer name" list={data.customers.map(c=>c.name)} idPrefix="pm-c"/></F>
     <F label="Bill No"><SmartInput value={f.billNo} onChange={selectBill} placeholder="Select bill number" list={uniqueBills} idPrefix="pm-b"/></F>
     <F label="Amount (₹) *"><input type="number" value={f.amount} onChange={e=>s("amount",e.target.value)} placeholder="0" style={{...IS,fontWeight:700}}/></F>
     <F label="Mode of Payment"><select value={f.mode} onChange={e=>s("mode",e.target.value)} style={IS}><option>NEFT</option><option>RTGS</option><option>Cheque</option><option>Cash</option><option>UPI</option></select></F>
-    {commissionEarned>0&&<div style={{background:"#F3EEF9",borderRadius:10,padding:"11px 14px",marginBottom:12,fontSize:13}}><div style={{fontWeight:700,color:C.purple}}>Commission on this payment</div><div style={{fontSize:18,fontWeight:900,color:C.purple,marginTop:4}}>₹{fmt(commissionEarned)}</div><div style={{fontSize:11,color:C.muted,marginTop:2}}>{fmt(linkedSale?.meters||0)} meters × ₹1.5</div></div>}
     <F label="Remarks"><input value={f.remarks} onChange={e=>s("remarks",e.target.value)} placeholder="Cheque no, ref…" style={IS}/></F>
-    <SaveBtn color={C.green} onClick={()=>{if(!f.customerName||!f.amount)return alert("Customer and Amount required");onSave({...f,commissionEarned});}}>Save Payment</SaveBtn>
+    <SaveBtn color={C.green} onClick={()=>{if(!f.customerName||!f.amount)return alert("Customer and Amount required");onSave(f);}}>Save Payment</SaveBtn>
   </ModalBase>);
 }
 
-function DebitModal({data,onSave,onClose}){
-  const[f,sf]=useState({date:today(),noteNo:"",customerName:"",originalBillNo:"",amount:"",remarks:""});
+function DebitModal({data,onSave,onClose,initial}){
+  const[f,sf]=useState(initial||{date:today(),noteNo:"",customerName:"",originalBillNo:"",amount:"",remarks:""});
   const s=(k,v)=>sf(p=>({...p,[k]:v}));
   const custBills=data.tradingSales.filter(x=>x.customerName===f.customerName&&x.billNo).map(x=>x.billNo);
-  return(<ModalBase title="Add Debit Note" onClose={onClose}>
+  return(<ModalBase title={initial?"Edit Debit Note":"Add Debit Note"} onClose={onClose}>
     <div style={{background:"#FDEDEC",borderRadius:10,padding:"10px 13px",marginBottom:14,fontSize:12.5,color:"#922B21"}}>Debit Note increases the customer outstanding balance.</div>
     <F label="Date *"><input type="date" value={f.date} onChange={e=>s("date",e.target.value)} style={IS}/></F>
     <F label="Debit Note No"><input value={f.noteNo} onChange={e=>s("noteNo",e.target.value)} placeholder="DN-001" style={IS}/></F>
@@ -1218,12 +1226,12 @@ function DebitModal({data,onSave,onClose}){
   </ModalBase>);
 }
 
-function CreditModal({data,onSave,onClose}){
-  const[f,sf]=useState({date:today(),noteNo:"",customerName:"",originalBillNo:"",productName:"",meters:"",rate:"",amount:"",remarks:""});
+function CreditModal({data,onSave,onClose,initial}){
+  const[f,sf]=useState(initial||{date:today(),noteNo:"",customerName:"",originalBillNo:"",productName:"",meters:"",rate:"",amount:"",remarks:""});
   const s=(k,v)=>sf(p=>({...p,[k]:v}));
-  useEffect(()=>{if(f.meters&&f.rate)s("amount",(parseFloat(f.meters)*parseFloat(f.rate)).toFixed(2));},[f.meters,f.rate]);
+  useEffect(()=>{if(f.meters&&f.rate&&!initial)s("amount",(parseFloat(f.meters)*parseFloat(f.rate)).toFixed(2));},[f.meters,f.rate]);
   const custBills=data.tradingSales.filter(x=>x.customerName===f.customerName&&x.billNo).map(x=>x.billNo);
-  return(<ModalBase title="Credit Note / Sale Return" onClose={onClose}>
+  return(<ModalBase title={initial?"Edit Credit / Return":"Credit Note / Sale Return"} onClose={onClose}>
     <div style={{background:"#E8F8F5",borderRadius:10,padding:"10px 13px",marginBottom:14,fontSize:12.5,color:C.teal}}>Credit Note reduces the customer outstanding balance.</div>
     <F label="Date *"><input type="date" value={f.date} onChange={e=>s("date",e.target.value)} style={IS}/></F>
     <F label="Credit Note No"><input value={f.noteNo} onChange={e=>s("noteNo",e.target.value)} placeholder="CN-001" style={IS}/></F>
