@@ -3,7 +3,7 @@ import * as XLSX from "xlsx";
 import { BarChart, Bar, LineChart, Line, PieChart, Pie, Cell, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from "recharts";
 
 const SK = "fabric-sales-v3-trading";
-const EMPTY = { customers:[], suppliers:[], products:[], tradingSales:[], tradingPayments:[], debitNotes:[], creditNotes:[] };
+const EMPTY = { customers:[], suppliers:[], products:[], tradingSales:[], tradingPayments:[], debitNotes:[], creditNotes:[], enquiries:[] };
 async function loadData(){try{const r=localStorage.getItem(SK);if(r)return{...EMPTY,...JSON.parse(r)};}catch(e){}return{...EMPTY};}
 async function saveData(d){try{localStorage.setItem(SK,JSON.stringify(d));}catch(e){}}
 
@@ -77,6 +77,7 @@ const TABS=[
   {id:"Aging",icon:"📅",label:"Ageing"},
   {id:"Analytics",icon:"📈",label:"Analytics"},
   {id:"Commission",icon:"💰",label:"Commission"},
+  {id:"Enquiry",icon:"📝",label:"Enquiry"},
   {id:"Masters",icon:"⚙️",label:"Masters"},
   {id:"Reports",icon:"📋",label:"Reports"},
 ];
@@ -180,6 +181,7 @@ export default function App(){
         {tab==="Aging"      &&<AgingTab data={data} generatePDF={generatePDF}/>}
         {tab==="Analytics"  &&<AnalyticsTab data={data} tradingOut={tradingOut}/>}
         {tab==="Commission" &&<CommissionTab data={data} generatePDF={generatePDF}/>}
+        {tab==="Enquiry"    &&<EnquiryTab data={data} onAdd={r=>add("enquiries",r)} onUpdate={r=>{setData(p=>({...p,enquiries:p.enquiries.map(e=>e.id===r.id?r:e)}));showToast("Updated.");}} onDel={id=>{if(!window.confirm("Delete this enquiry?"))return;setData(p=>({...p,enquiries:p.enquiries.filter(e=>e.id!==id)}));showToast("Deleted.");}}/>}
         {tab==="Masters"    &&<MastersTab data={data} onAdd={setModal} onDel={del} onEdit={(type,rec)=>setModal({type:`edit-${type}`,rec})} onImportExcel={()=>importRef.current&&importRef.current.click()}/>}
         {tab==="Reports"    &&<ReportsTab data={data} tradingOut={tradingOut} tots={{totTradingSale,totTradingPaid,totTradingOut,totComm}} generatePDF={generatePDF}/>}
       </div>
@@ -356,7 +358,8 @@ function OutstandingTab({tradingOut,data,onAddPay,generatePDF}){
   const entries=Object.values(tradingOut).map(v=>{
     const net=Math.max(0,v.due+(v.debit||0)-v.paid-(v.credit||0));
     const custSales=data.tradingSales.filter(s=>s.customerName===v.name).sort((a,b)=>new Date(a.date)-new Date(b.date));
-    let rem=v.paid;let maxDays=0;let oldestBill=null;let oldestDate=null;
+    // Credit notes reduce outstanding same as payment — include in FIFO pool
+    let rem=v.paid+(v.credit||0);let maxDays=0;let oldestBill=null;let oldestDate=null;
     const openBills=[];
     custSales.forEach(s=>{
       const amt=+s.amount||0;
@@ -716,6 +719,152 @@ function AnalyticsTab({data,tradingOut}){
   </div>);
 }
 
+// ─── ENQUIRY TAB ─────────────────────────────────────────────────
+function EnquiryTab({data,onAdd,onUpdate,onDel}){
+  const[showForm,setShowForm]=useState(false);
+  const[filter,setFilter]=useState("open"); // open | closed | all
+  const[editId,setEditId]=useState(null);
+  const[form,setForm]=useState({enquiryDate:today(),customerName:"",description:"",submissionDate:"",closeDate:"",remarks:"",status:"Open"});
+  const sf=(k,v)=>setForm(p=>({...p,[k]:v}));
+
+  const todayMs=new Date().setHours(0,0,0,0);
+  const enquiries=data.enquiries||[];
+
+  const resetForm=()=>{setForm({enquiryDate:today(),customerName:"",description:"",submissionDate:"",closeDate:"",remarks:"",status:"Open"});setEditId(null);setShowForm(false);};
+
+  const saveEnquiry=()=>{
+    if(!form.customerName||!form.description)return alert("Customer and Description required");
+    if(editId){onUpdate({...form,id:editId});}
+    else{onAdd({...form,followUps:[],createdAt:today()});}
+    resetForm();
+  };
+
+  const addFollowUp=(enq)=>{
+    const note=prompt("Follow-up note (optional):")||"";
+    const updated={...enq,followUps:[...(enq.followUps||[]),{date:today(),note,time:new Date().toLocaleTimeString("en-IN",{hour:"2-digit",minute:"2-digit"})}]};
+    onUpdate(updated);
+  };
+
+  const closeEnquiry=(enq)=>{
+    if(!window.confirm("Mark this enquiry as Closed?"))return;
+    onUpdate({...enq,status:"Closed",closeDate:today()});
+  };
+
+  const reopenEnquiry=(enq)=>onUpdate({...enq,status:"Open",closeDate:""});
+
+  const buildWAEnquiry=(enq)=>{
+    const phone=data.customers.find(c=>c.name===enq.customerName)?.phone||"";
+    const msg=`🏢 *Navkar Fabrics*\n\nDear *${enq.customerName}*,\n\nThis is a follow-up regarding:\n\n📋 *${enq.description}*\n\nEnquiry Date: ${fmtD(enq.enquiryDate)}${enq.submissionDate?`\nSubmission Date: ${fmtD(enq.submissionDate)}`:""}\n\nKindly revert at the earliest.\n\nRegards\nNavkar Fabrics`;
+    const n=phone?"91"+String(phone).replace(/\D/g,"").slice(-10):"";
+    window.open(`https://wa.me/${n}?text=${encodeURIComponent(msg)}`,"_blank");
+  };
+
+  const getDaysOpen=(enq)=>Math.floor((todayMs-new Date(enq.enquiryDate).setHours(0,0,0,0))/86400000);
+
+  const filtered=enquiries.filter(e=>filter==="all"?true:filter==="open"?e.status!=="Closed":e.status==="Closed").sort((a,b)=>new Date(b.enquiryDate)-new Date(a.enquiryDate));
+  const openCount=enquiries.filter(e=>e.status!=="Closed").length;
+
+  return(<div>
+    {/* Header */}
+    <div style={{background:`linear-gradient(135deg,${C.navy},${C.navyMid})`,borderRadius:14,padding:"14px 16px",marginBottom:14,border:"1px solid rgba(232,201,126,0.25)"}}>
+      <div style={{fontSize:10,color:C.gold,textTransform:"uppercase",letterSpacing:1,fontWeight:700}}>📝 Enquiry / Requirement Notes</div>
+      <div style={{display:"flex",gap:20,marginTop:10}}>
+        <div><div style={{fontSize:22,fontWeight:900,color:"#fff"}}>{openCount}</div><div style={{fontSize:10,color:"rgba(255,255,255,0.5)"}}>Open</div></div>
+        <div><div style={{fontSize:22,fontWeight:900,color:C.gold}}>{enquiries.filter(e=>e.status==="Closed").length}</div><div style={{fontSize:10,color:"rgba(255,255,255,0.5)"}}>Closed</div></div>
+        <div><div style={{fontSize:22,fontWeight:900,color:"#fff"}}>{enquiries.length}</div><div style={{fontSize:10,color:"rgba(255,255,255,0.5)"}}>Total</div></div>
+      </div>
+    </div>
+
+    {/* Add Button */}
+    {!showForm&&<button onClick={()=>setShowForm(true)} style={{background:C.blue,color:"#fff",border:"none",borderRadius:11,padding:"12px 18px",fontSize:13.5,fontWeight:700,cursor:"pointer",width:"100%",marginBottom:12,minHeight:46}}>+ New Enquiry / Requirement</button>}
+
+    {/* Form */}
+    {showForm&&<div style={{background:C.card,borderRadius:14,padding:"16px",marginBottom:14,boxShadow:"0 2px 12px rgba(0,0,0,0.08)",border:`1px solid ${C.border}`}}>
+      <div style={{fontWeight:800,fontSize:15,color:C.navy,marginBottom:14}}>{editId?"Edit Enquiry":"New Enquiry / Requirement"}</div>
+      <F label="Enquiry / Request Date *"><input type="date" value={form.enquiryDate} onChange={e=>sf("enquiryDate",e.target.value)} style={IS}/></F>
+      <F label="Customer Name *"><SmartInput value={form.customerName} onChange={v=>sf("customerName",v)} placeholder="Customer name" list={data.customers.map(c=>c.name)} idPrefix="enq-c"/></F>
+      <F label="Description / Submission Details *"><textarea value={form.description} onChange={e=>sf("description",e.target.value)} placeholder="What is the enquiry / requirement about?" style={{...IS,minHeight:80,resize:"vertical"}}/></F>
+      <F label="Submission Date (if applicable)"><input type="date" value={form.submissionDate} onChange={e=>sf("submissionDate",e.target.value)} style={IS}/></F>
+      <F label="Remarks"><input value={form.remarks} onChange={e=>sf("remarks",e.target.value)} placeholder="Any additional notes" style={IS}/></F>
+      <div style={{display:"flex",gap:8,marginTop:4}}>
+        <button onClick={saveEnquiry} style={{flex:1,background:C.blue,color:"#fff",border:"none",borderRadius:11,padding:14,fontSize:14,fontWeight:800,cursor:"pointer",minHeight:48}}>💾 Save</button>
+        <button onClick={resetForm} style={{background:"#F0F4F8",color:C.navy,border:"none",borderRadius:11,padding:14,fontSize:14,fontWeight:700,cursor:"pointer",minHeight:48}}>Cancel</button>
+      </div>
+    </div>}
+
+    {/* Filter */}
+    <div style={{display:"flex",background:"#fff",borderRadius:11,overflow:"hidden",border:`1px solid ${C.border}`,marginBottom:12}}>
+      {[{v:"open",l:`🟡 Open (${openCount})`},{v:"closed",l:"✅ Closed"},{v:"all",l:"📋 All"}].map(o=>(
+        <button key={o.v} onClick={()=>setFilter(o.v)} style={{flex:1,padding:"11px 4px",fontSize:12,fontWeight:filter===o.v?700:500,color:filter===o.v?"#E8C97E":C.muted,background:filter===o.v?C.navy:"transparent",border:"none",cursor:"pointer",minHeight:44}}>{o.l}</button>
+      ))}
+    </div>
+
+    {/* List */}
+    {filtered.length===0&&<Empty text={filter==="open"?"No open enquiries. Great!":"No enquiries found."}/>}
+    {filtered.map(enq=>{
+      const daysOpen=getDaysOpen(enq);
+      const followUps=enq.followUps||[];
+      const isClosed=enq.status==="Closed";
+      const urgColor=daysOpen>14?C.red:daysOpen>7?C.orange:C.green;
+      const phone=data.customers.find(c=>c.name===enq.customerName)?.phone||"";
+      return(
+        <div key={enq.id} style={{background:C.card,borderRadius:14,padding:"14px 15px",marginBottom:12,boxShadow:"0 1px 8px rgba(0,0,0,0.07)",borderLeft:`4px solid ${isClosed?C.green:urgColor}`,opacity:isClosed?0.85:1}}>
+          {/* Header */}
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:8}}>
+            <div style={{flex:1,paddingRight:8}}>
+              <B style={{fontSize:14,color:C.navy}}>{enq.customerName}</B>
+              <Mute>📅 {fmtD(enq.enquiryDate)}</Mute>
+            </div>
+            <div style={{textAlign:"right",flexShrink:0}}>
+              <span style={{fontSize:10,fontWeight:800,background:isClosed?"#E8F8F5":"#FEF9E7",color:isClosed?C.teal:urgColor,padding:"3px 9px",borderRadius:20,border:`1px solid ${isClosed?C.teal:urgColor}`}}>{isClosed?"✅ Closed":`🟡 Open`}</span>
+              {!isClosed&&<div style={{fontSize:11,color:urgColor,fontWeight:700,marginTop:4}}>{daysOpen}d open</div>}
+            </div>
+          </div>
+
+          {/* Description */}
+          <div style={{background:"#F8FAFC",borderRadius:9,padding:"10px 12px",marginBottom:8,fontSize:12.5,color:C.navy,lineHeight:1.6}}>{enq.description}</div>
+
+          {/* Details */}
+          <div style={{display:"flex",gap:12,fontSize:11.5,color:C.muted,flexWrap:"wrap",marginBottom:8}}>
+            {enq.submissionDate&&<span>📤 Submission: <b>{fmtD(enq.submissionDate)}</b></span>}
+            {enq.closeDate&&<span>🔒 Closed: <b>{fmtD(enq.closeDate)}</b></span>}
+            {enq.remarks&&<span>💬 {enq.remarks}</span>}
+          </div>
+
+          {/* Follow-up count + history */}
+          <div style={{background:followUps.length>0?"#F3EEF9":"#F8FAFC",borderRadius:9,padding:"8px 12px",marginBottom:10}}>
+            <div style={{fontSize:12,fontWeight:700,color:C.purple,marginBottom:followUps.length>0?6:0}}>
+              🔁 Follow-ups: {followUps.length}
+            </div>
+            {followUps.slice(-3).map((f,i)=>(
+              <div key={i} style={{fontSize:11.5,color:C.muted,paddingTop:4,borderTop:"1px solid #EEE",marginTop:4}}>
+                <b style={{color:C.navy}}>{f.date}</b> {f.time&&`@ ${f.time}`} {f.note&&`— ${f.note}`}
+              </div>
+            ))}
+            {followUps.length>3&&<div style={{fontSize:11,color:C.muted,marginTop:4}}>+{followUps.length-3} more follow-ups</div>}
+          </div>
+
+          {/* Action Buttons */}
+          {!isClosed&&<div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
+            <button onClick={()=>addFollowUp(enq)} style={{background:C.purple,color:"#fff",border:"none",borderRadius:9,padding:"9px 13px",fontSize:12,fontWeight:700,cursor:"pointer",flex:1,minHeight:40}}>🔁 Follow-up</button>
+            <button onClick={()=>buildWAEnquiry(enq)} style={{background:"#E8FBF0",color:"#25D366",border:"1px solid #25D366",borderRadius:9,padding:"9px 13px",fontSize:12,fontWeight:700,cursor:"pointer",minHeight:40}}>💬 WA</button>
+            {phone&&<button onClick={()=>window.open(`tel:${phone}`)} style={{background:"#EAF4FC",color:C.blue,border:"none",borderRadius:9,padding:"9px 13px",fontSize:12,fontWeight:700,cursor:"pointer",minHeight:40}}>📞 Call</button>}
+            <button onClick={()=>closeEnquiry(enq)} style={{background:"#E8F8F5",color:C.teal,border:"1px solid "+C.teal,borderRadius:9,padding:"9px 13px",fontSize:12,fontWeight:700,cursor:"pointer",minHeight:40}}>✅ Close</button>
+          </div>}
+          {isClosed&&<div style={{display:"flex",gap:6}}>
+            <button onClick={()=>reopenEnquiry(enq)} style={{background:"#FEF9E7",color:C.orange,border:`1px solid ${C.orange}`,borderRadius:9,padding:"9px 13px",fontSize:12,fontWeight:700,cursor:"pointer",minHeight:40}}>🔄 Reopen</button>
+            <button onClick={()=>{if(!window.confirm("Delete this enquiry?"))return;onDel(enq.id);}} style={{background:"#FEE8E8",color:C.red,border:"none",borderRadius:9,padding:"9px 13px",fontSize:12,fontWeight:700,cursor:"pointer",minHeight:40}}>🗑️ Delete</button>
+          </div>}
+          {!isClosed&&<div style={{display:"flex",gap:6,marginTop:6}}>
+            <button onClick={()=>{setForm({...enq});setEditId(enq.id);setShowForm(true);window.scrollTo(0,0);}} style={{background:"#EAF4FC",color:C.blue,border:"none",borderRadius:9,padding:"7px 13px",fontSize:12,fontWeight:700,cursor:"pointer"}}>✏️ Edit</button>
+            <button onClick={()=>onDel(enq.id)} style={{background:"#FEE8E8",color:C.red,border:"none",borderRadius:9,padding:"7px 13px",fontSize:12,fontWeight:700,cursor:"pointer"}}>🗑️ Delete</button>
+          </div>}
+        </div>
+      );
+    })}
+  </div>);
+}
+
 // ─── COMMISSION TAB ──────────────────────────────────────────────
 function calcFIFOCommission(tradingSales,tradingPayments,creditNotes=[],debitNotes=[]){
   const customerMap={};
@@ -980,7 +1129,7 @@ function ReportsTab({data,tradingOut,tots,generatePDF}){
   const outEntries=useMemo(()=>Object.values(tradingOut).map(v=>{
     const net=Math.max(0,v.due+(v.debit||0)-v.paid-(v.credit||0));
     const custSales=data.tradingSales.filter(s=>s.customerName===v.name).sort((a,b)=>new Date(a.date)-new Date(b.date));
-    let rem=v.paid;const openBills=[];
+    let rem=v.paid+(v.credit||0);const openBills=[];
     custSales.forEach(s=>{const amt=+s.amount||0;const d=Math.min(amt,rem);rem-=d;const left=amt-d;
       if(left>0){const days=Math.floor((todayMs-new Date(s.date).setHours(0,0,0,0))/86400000);
         openBills.push({billNo:s.billNo||"—",date:s.date,billAmount:amt,outstanding:left,days,productName:s.productName,meters:+s.meters||0,rate:+s.rate||0});}
