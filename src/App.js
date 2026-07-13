@@ -71,8 +71,7 @@ function parseExcelData(rows){
 
 const TABS=[
   {id:"Dashboard",icon:"📊",label:"Dashboard"},
-  {id:"Trading",icon:"🏪",label:"Trading"},
-  {id:"Returns",icon:"↩️",label:"Returns"},
+  {id:"Trading",icon:"🏪",label:"Entry"},
   {id:"Outstanding",icon:"⏳",label:"Outstanding"},
   {id:"Aging",icon:"📅",label:"Ageing"},
   {id:"Analytics",icon:"📈",label:"Analytics"},
@@ -175,8 +174,7 @@ export default function App(){
       </div>
       <div className="main" style={{marginLeft:0,padding:"18px 16px 40px",maxWidth:860}}>
         {tab==="Dashboard"  &&<DashboardTab data={data} tots={{totTradingSale,totTradingPaid,totTradingOut,totComm}} onNav={setTab} tradingOut={tradingOut}/>}
-        {tab==="Trading"    &&<TradingTab data={data} onAdd={()=>setModal({type:"sale"})} onAddPay={()=>setModal({type:"payment"})} onDel={del} onEdit={(type,rec)=>setModal({type:`edit-${type}`,rec})} tradingOut={tradingOut}/>}
-        {tab==="Returns"    &&<ReturnsTab data={data} onAddDebit={()=>setModal({type:"debit"})} onAddCredit={()=>setModal({type:"credit"})} onDel={del} onEdit={(type,rec)=>setModal({type:`edit-${type}`,rec})}/>}
+        {tab==="Trading"    &&<TradingTab data={data} onAdd={()=>setModal({type:"sale"})} onAddPay={()=>setModal({type:"payment"})} onAddDebit={()=>setModal({type:"debit"})} onAddCredit={()=>setModal({type:"credit"})} onDel={del} onEdit={(type,rec)=>setModal({type:`edit-${type}`,rec})} tradingOut={tradingOut}/>}
         {tab==="Outstanding"&&<OutstandingTab tradingOut={tradingOut} data={data} onAddPay={(pre)=>setModal({type:"payment",preCustomer:pre})} generatePDF={generatePDF}/>}
         {tab==="Aging"      &&<AgingTab data={data} generatePDF={generatePDF}/>}
         {tab==="Analytics"  &&<AnalyticsTab data={data} tradingOut={tradingOut}/>}
@@ -242,27 +240,29 @@ function DashboardTab({data,tots,onNav,tradingOut}){
   </div>);
 }
 
-// ─── TRADING TAB ─────────────────────────────────────────────────
-function TradingTab({data,onAdd,onAddPay,onDel,onEdit,tradingOut}){
+// ─── ENTRY TAB (Sale, Payment, Debit Note, Credit/Return) ─────────
+function TradingTab({data,onAdd,onAddPay,onAddDebit,onAddCredit,onDel,onEdit}){
   const[view,setView]=useState("sales");const[search,setSearch]=useState("");
-  const sales=[...data.tradingSales].filter(s=>!search||[s.customerName,s.productName,s.billNo].some(x=>x?.toLowerCase().includes(search.toLowerCase()))).sort((a,b)=>new Date(b.date)-new Date(a.date));
-  const payments=[...data.tradingPayments].sort((a,b)=>new Date(b.date)-new Date(a.date));
-  const totSales=data.tradingSales.reduce((a,s)=>a+(+s.amount||0),0);
-  const totPaid=data.tradingPayments.reduce((a,p)=>a+(+p.amount||0),0);
-  const totOut=Object.values(tradingOut).reduce((a,v)=>a+Math.max(0,v.due+(v.debit||0)-v.paid-(v.credit||0)),0);
-  const totComm=calcFIFOCommission(data.tradingSales,data.tradingPayments,data.creditNotes||[],data.debitNotes||[]).totalCommission;
+  const q=search.trim().toLowerCase();
+  const matchName=(name)=>!q||(name||"").toLowerCase().includes(q);
+
+  const sales=[...data.tradingSales].filter(s=>!q||[s.customerName,s.productName,s.billNo].some(x=>x?.toLowerCase().includes(q))).sort((a,b)=>new Date(b.date)-new Date(a.date));
+  const payments=[...data.tradingPayments].filter(p=>matchName(p.customerName)).sort((a,b)=>new Date(b.date)-new Date(a.date));
+  const debitNotes=(data.debitNotes||[]).filter(n=>matchName(n.customerName)).sort((a,b)=>new Date(b.date)-new Date(a.date));
+  const creditNotes=(data.creditNotes||[]).filter(n=>matchName(n.customerName)).sort((a,b)=>new Date(b.date)-new Date(a.date));
+
   return(<div>
-    <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:12}}>
-      <KpiCard icon="🏪" label="Total Sales" val={totSales} color={C.blue}/>
-      <KpiCard icon="✅" label="Total Paid"  val={totPaid}  color={C.green}/>
-      <KpiCard icon="⏳" label="Outstanding" val={totOut}   color={C.red}/>
-      <KpiCard icon="💰" label="Commission"  val={totComm}  color={C.purple}/>
+    <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:10}}>
+      <Btn color={C.blue} onClick={onAdd}>+ Sale Entry</Btn>
+      <Btn color={C.green} onClick={onAddPay}>+ Payment</Btn>
+      <Btn color={C.red} onClick={onAddDebit}>+ Debit Note</Btn>
+      <Btn color={C.green} onClick={onAddCredit}>+ Goods Return / Credit Note</Btn>
     </div>
-    <div style={{display:"flex",gap:8,marginBottom:12}}><Btn color={C.blue} onClick={onAdd}>+ Sale Entry</Btn><Btn color={C.green} onClick={onAddPay}>+ Payment</Btn></div>
-    <SegCtrl options={[{v:"sales",l:`Sales (${data.tradingSales.length})`},{v:"payments",l:`Payments (${data.tradingPayments.length})`}]} val={view} onChange={setView}/>
+    <input placeholder="🔍 Search customer (Sale, Payment, Debit, Credit)…" value={search} onChange={e=>setSearch(e.target.value)} style={{...IS,marginBottom:10}}/>
+    <SegCtrl options={[{v:"sales",l:`Sales (${sales.length})`},{v:"payments",l:`Payments (${payments.length})`},{v:"debit",l:`Debit (${debitNotes.length})`},{v:"credit",l:`Credit (${creditNotes.length})`}]} val={view} onChange={setView}/>
+    <div style={{marginTop:10}}>
     {view==="sales"&&<>
-      <input placeholder="Search customer, product, bill no…" value={search} onChange={e=>setSearch(e.target.value)} style={{...IS,margin:"10px 0"}}/>
-      {sales.length===0&&<Empty text="No sales yet. Import Excel or add manually."/>}
+      {sales.length===0&&<Empty text="No sales found."/>}
       {sales.map(s=>(<div key={s.id} style={{background:C.card,borderRadius:13,padding:"14px 15px",marginBottom:10,boxShadow:"0 1px 8px rgba(0,0,0,0.06)"}}>
         <Row><B>{s.customerName}</B><span style={{fontWeight:900,color:C.blue,fontSize:14}}>₹{fmt(s.amount)}</span></Row>
         {s.billNo&&<Mute>Bill No: {s.billNo}</Mute>}
@@ -275,7 +275,7 @@ function TradingTab({data,onAdd,onAddPay,onDel,onEdit,tradingOut}){
       </div>))}
     </>}
     {view==="payments"&&<>
-      {payments.length===0&&<Empty text="No payments yet."/>}
+      {payments.length===0&&<Empty text="No payments found."/>}
       {payments.map(p=>(<div key={p.id} style={{background:C.card,borderRadius:13,padding:"14px 15px",marginBottom:10,boxShadow:"0 1px 8px rgba(0,0,0,0.06)"}}>
         <Row><B>{p.customerName}</B><span style={{fontWeight:900,color:C.green}}>₹{fmt(p.amount)}</span></Row>
         {p.billNo&&<Mute>Bill No: {p.billNo}</Mute>}
@@ -287,60 +287,35 @@ function TradingTab({data,onAdd,onAddPay,onDel,onEdit,tradingOut}){
         </div>
       </div>))}
     </>}
-  </div>);
-}
-
-// ─── RETURNS TAB ─────────────────────────────────────────────────
-function ReturnsTab({data,onAddDebit,onAddCredit,onDel,onEdit}){
-  const[view,setView]=useState("credit");
-  const debitNotes=data.debitNotes||[];
-  const creditNotes=data.creditNotes||[];
-  const totDebit=debitNotes.reduce((a,n)=>a+(+n.amount||0),0);
-  const totCredit=creditNotes.reduce((a,n)=>a+(+n.amount||0),0);
-  return(<div>
-    <div style={{background:"#FEF9E7",borderRadius:12,padding:"12px 14px",marginBottom:14,border:"1px solid #F9E79F"}}>
-      <div style={{fontWeight:700,fontSize:13,color:"#7D6608",marginBottom:4}}>How Returns Work</div>
-      <div style={{fontSize:12,color:"#7D6608",lineHeight:1.6}}><b>Debit Note</b> — Customer owes MORE (price difference, penalty, extra goods sent).<br/><b>Credit Note / Sale Return</b> — Customer owes LESS (goods returned, allowance given).</div>
-    </div>
-    <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginBottom:14}}>
-      <div style={{background:C.card,borderRadius:13,padding:"13px 14px",borderLeft:`4px solid ${C.red}`}}><div style={{fontSize:10,color:C.muted,textTransform:"uppercase",fontWeight:700}}>Debit Notes</div><div style={{fontSize:20,fontWeight:900,color:C.red}}>₹{fmt(totDebit)}</div><div style={{fontSize:11,color:C.muted}}>{debitNotes.length} entries</div></div>
-      <div style={{background:C.card,borderRadius:13,padding:"13px 14px",borderLeft:`4px solid ${C.green}`}}><div style={{fontSize:10,color:C.muted,textTransform:"uppercase",fontWeight:700}}>Credit / Return</div><div style={{fontSize:20,fontWeight:900,color:C.green}}>₹{fmt(totCredit)}</div><div style={{fontSize:11,color:C.muted}}>{creditNotes.length} entries</div></div>
-    </div>
-    <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginBottom:14}}>
-      <button onClick={onAddDebit} style={{background:C.red,color:"#fff",border:"none",borderRadius:12,padding:"14px 10px",fontSize:13.5,fontWeight:700,cursor:"pointer",minHeight:50}}>+ Debit Note</button>
-      <button onClick={onAddCredit} style={{background:C.green,color:"#fff",border:"none",borderRadius:12,padding:"14px 10px",fontSize:13.5,fontWeight:700,cursor:"pointer",minHeight:50}}>+ Credit / Return</button>
-    </div>
-    <SegCtrl options={[{v:"credit",l:`Returns (${creditNotes.length})`},{v:"debit",l:`Debit Notes (${debitNotes.length})`}]} val={view} onChange={setView}/>
-    <div style={{marginTop:12}}>
-      {view==="credit"&&<>
-        {creditNotes.length===0&&<Empty text="No credit notes or sale returns yet."/>}
-        {[...creditNotes].sort((a,b)=>new Date(b.date)-new Date(a.date)).map(n=>(<div key={n.id} style={{background:C.card,borderRadius:13,padding:"14px 15px",marginBottom:10,boxShadow:"0 1px 8px rgba(0,0,0,0.06)",borderLeft:`4px solid ${C.green}`}}>
-          <Row><div><B>{n.customerName}</B>{n.noteNo&&<Mute>Note No: {n.noteNo}</Mute>}</div><span style={{fontWeight:900,color:C.green,fontSize:15}}>₹{fmt(n.amount)}</span></Row>
-          {n.originalBillNo&&<Mute>Against Bill: {n.originalBillNo}</Mute>}
-          {n.productName&&<Mute>{n.productName}{n.meters?` · ${fmt(n.meters)} m`:""}</Mute>}
-          <Mute>{fmtD(n.date)}</Mute>
-          {n.remarks&&<Mute>{n.remarks}</Mute>}
-          <div style={{background:"#E8F8F5",borderRadius:8,padding:"7px 10px",marginTop:8,fontSize:11.5,color:C.teal,fontWeight:600}}>Reduces customer outstanding</div>
-          <div style={{display:"flex",gap:8,marginTop:8}}>
-            <button onClick={()=>onEdit("credit",n)} style={{background:"#EAF4FC",color:C.blue,border:"none",borderRadius:8,padding:"7px 14px",fontSize:12,fontWeight:700,cursor:"pointer"}}>✏️ Edit</button>
-            <button onClick={()=>onDel("creditNotes",n.id)} style={{background:"#FEE8E8",color:C.red,border:"none",borderRadius:8,padding:"7px 14px",fontSize:12,fontWeight:700,cursor:"pointer"}}>🗑️ Delete</button>
-          </div>
-        </div>))}
-      </>}
-      {view==="debit"&&<>
-        {debitNotes.length===0&&<Empty text="No debit notes yet."/>}
-        {[...debitNotes].sort((a,b)=>new Date(b.date)-new Date(a.date)).map(n=>(<div key={n.id} style={{background:C.card,borderRadius:13,padding:"14px 15px",marginBottom:10,boxShadow:"0 1px 8px rgba(0,0,0,0.06)",borderLeft:`4px solid ${C.red}`}}>
-          <Row><div><B>{n.customerName}</B>{n.noteNo&&<Mute>Note No: {n.noteNo}</Mute>}</div><span style={{fontWeight:900,color:C.red,fontSize:15}}>₹{fmt(n.amount)}</span></Row>
-          {n.originalBillNo&&<Mute>Against Bill: {n.originalBillNo}</Mute>}
-          <Mute>{fmtD(n.date)}</Mute>
-          {n.remarks&&<Mute>{n.remarks}</Mute>}
-          <div style={{background:"#FDEDEC",borderRadius:8,padding:"7px 10px",marginTop:8,fontSize:11.5,color:"#C0392B",fontWeight:600}}>Increases customer outstanding</div>
-          <div style={{display:"flex",gap:8,marginTop:8}}>
-            <button onClick={()=>onEdit("debit",n)} style={{background:"#EAF4FC",color:C.blue,border:"none",borderRadius:8,padding:"7px 14px",fontSize:12,fontWeight:700,cursor:"pointer"}}>✏️ Edit</button>
-            <button onClick={()=>onDel("debitNotes",n.id)} style={{background:"#FEE8E8",color:C.red,border:"none",borderRadius:8,padding:"7px 14px",fontSize:12,fontWeight:700,cursor:"pointer"}}>🗑️ Delete</button>
-          </div>
-        </div>))}
-      </>}
+    {view==="debit"&&<>
+      {debitNotes.length===0&&<Empty text="No debit notes found."/>}
+      {debitNotes.map(n=>(<div key={n.id} style={{background:C.card,borderRadius:13,padding:"14px 15px",marginBottom:10,boxShadow:"0 1px 8px rgba(0,0,0,0.06)",borderLeft:`4px solid ${C.red}`}}>
+        <Row><div><B>{n.customerName}</B>{n.noteNo&&<Mute>Note No: {n.noteNo}</Mute>}</div><span style={{fontWeight:900,color:C.red,fontSize:15}}>₹{fmt(n.amount)}</span></Row>
+        {n.originalBillNo&&<Mute>Against Bill: {n.originalBillNo}</Mute>}
+        <Mute>{fmtD(n.date)}</Mute>
+        {n.remarks&&<Mute>{n.remarks}</Mute>}
+        <div style={{background:"#FDEDEC",borderRadius:8,padding:"7px 10px",marginTop:8,fontSize:11.5,color:"#C0392B",fontWeight:600}}>Increases customer outstanding</div>
+        <div style={{display:"flex",gap:8,marginTop:8}}>
+          <button onClick={()=>onEdit("debit",n)} style={{background:"#EAF4FC",color:C.blue,border:"none",borderRadius:8,padding:"7px 14px",fontSize:12,fontWeight:700,cursor:"pointer"}}>✏️ Edit</button>
+          <button onClick={()=>onDel("debitNotes",n.id)} style={{background:"#FEE8E8",color:C.red,border:"none",borderRadius:8,padding:"7px 14px",fontSize:12,fontWeight:700,cursor:"pointer"}}>🗑️ Delete</button>
+        </div>
+      </div>))}
+    </>}
+    {view==="credit"&&<>
+      {creditNotes.length===0&&<Empty text="No credit notes or sale returns found."/>}
+      {creditNotes.map(n=>(<div key={n.id} style={{background:C.card,borderRadius:13,padding:"14px 15px",marginBottom:10,boxShadow:"0 1px 8px rgba(0,0,0,0.06)",borderLeft:`4px solid ${C.green}`}}>
+        <Row><div><B>{n.customerName}</B>{n.noteNo&&<Mute>Note No: {n.noteNo}</Mute>}</div><span style={{fontWeight:900,color:C.green,fontSize:15}}>₹{fmt(n.amount)}</span></Row>
+        {n.originalBillNo&&<Mute>Against Bill: {n.originalBillNo}</Mute>}
+        {n.productName&&<Mute>{n.productName}{n.meters?` · ${fmt(n.meters)} m`:""}</Mute>}
+        <Mute>{fmtD(n.date)}</Mute>
+        {n.remarks&&<Mute>{n.remarks}</Mute>}
+        <div style={{background:"#E8F8F5",borderRadius:8,padding:"7px 10px",marginTop:8,fontSize:11.5,color:C.teal,fontWeight:600}}>Reduces customer outstanding</div>
+        <div style={{display:"flex",gap:8,marginTop:8}}>
+          <button onClick={()=>onEdit("credit",n)} style={{background:"#EAF4FC",color:C.blue,border:"none",borderRadius:8,padding:"7px 14px",fontSize:12,fontWeight:700,cursor:"pointer"}}>✏️ Edit</button>
+          <button onClick={()=>onDel("creditNotes",n.id)} style={{background:"#FEE8E8",color:C.red,border:"none",borderRadius:8,padding:"7px 14px",fontSize:12,fontWeight:700,cursor:"pointer"}}>🗑️ Delete</button>
+        </div>
+      </div>))}
+    </>}
     </div>
   </div>);
 }
@@ -583,6 +558,23 @@ function AnalyticsTab({data,tradingOut}){
   const totSales=filtered.reduce((a,s)=>a+(+s.amount||0),0);
   const totPays=filteredPay.reduce((a,p)=>a+(+p.amount||0),0);
 
+  // Debit / Credit notes for selected FY
+  const filteredDebit=useMemo(()=>{
+    const list=data.debitNotes||[];
+    if(fy===ALL_FY)return list;
+    const{start,end}=getFYRange(fy);
+    return list.filter(n=>{const d=new Date(n.date);return d>=start&&d<=end;});
+  },[data,fy]);
+  const filteredCredit=useMemo(()=>{
+    const list=data.creditNotes||[];
+    if(fy===ALL_FY)return list;
+    const{start,end}=getFYRange(fy);
+    return list.filter(n=>{const d=new Date(n.date);return d>=start&&d<=end;});
+  },[data,fy]);
+  const totDebit=filteredDebit.reduce((a,n)=>a+(+n.amount||0),0);
+  const totCredit=filteredCredit.reduce((a,n)=>a+(+n.amount||0),0);
+  const notesChartData=[{name:"Debit Notes",value:totDebit},{name:"Credit Notes",value:totCredit}];
+
   return(<div>
     {/* FY Selector */}
     <div style={{marginBottom:14}}>
@@ -610,7 +602,7 @@ function AnalyticsTab({data,tradingOut}){
 
     {/* Chart Type Selector */}
     <div style={{display:"flex",overflowX:"auto",gap:6,marginBottom:12,scrollbarWidth:"none"}}>
-      {[{v:"monthly",l:"📅 Monthly"},{v:"trend",l:"📈 Trend"},{v:"yoy",l:"📊 Year-on-Year"},{v:"customer",l:"👥 Customers"},{v:"product",l:"📦 Products"},{v:"fycompare",l:"📈 FY Summary"}].map(ct=>(
+      {[{v:"monthly",l:"📅 Monthly"},{v:"trend",l:"📈 Trend"},{v:"yoy",l:"📊 Year-on-Year"},{v:"customer",l:"👥 Customers"},{v:"product",l:"📦 Products"},{v:"fycompare",l:"📈 FY Summary"},{v:"notes",l:"↩️ Debit/Credit"}].map(ct=>(
         <button key={ct.v} onClick={()=>setChartType(ct.v)} style={{flex:"0 0 auto",padding:"9px 13px",borderRadius:20,fontSize:12,fontWeight:chartType===ct.v?700:500,border:`1.5px solid ${chartType===ct.v?C.navy:C.border}`,background:chartType===ct.v?C.navy:"#fff",color:chartType===ct.v?C.gold:"#666",cursor:"pointer",whiteSpace:"nowrap",minHeight:38}}>{ct.l}</button>
       ))}
     </div>
@@ -714,6 +706,32 @@ function AnalyticsTab({data,tradingOut}){
             <div style={{fontSize:10,color:C.muted,marginTop:4}}>{f.sales>0?(f.pays/f.sales*100).toFixed(1):0}% collected</div>
           </div>
         ))}
+      </>}
+
+      {chartType==="notes"&&<>
+        <div style={{fontWeight:700,fontSize:14,color:C.navy,marginBottom:4}}>Debit & Credit Notes {fy!==ALL_FY?`— FY ${fy}`:""}</div>
+        <div style={{fontSize:11,color:C.muted,marginBottom:14}}>Returns and adjustments overview</div>
+        <div style={{background:"#FEF9E7",borderRadius:12,padding:"12px 14px",marginBottom:14,border:"1px solid #F9E79F"}}>
+          <div style={{fontWeight:700,fontSize:13,color:"#7D6608",marginBottom:4}}>How Returns Work</div>
+          <div style={{fontSize:12,color:"#7D6608",lineHeight:1.6}}><b>Debit Note</b> — Customer owes MORE (price difference, penalty, extra goods sent).<br/><b>Credit Note / Sale Return</b> — Customer owes LESS (goods returned, allowance given).</div>
+        </div>
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginBottom:14}}>
+          <div style={{background:"#F8FAFC",borderRadius:13,padding:"13px 14px",borderLeft:`4px solid ${C.red}`}}><div style={{fontSize:10,color:C.muted,textTransform:"uppercase",fontWeight:700}}>Debit Notes</div><div style={{fontSize:20,fontWeight:900,color:C.red}}>₹{fmt(totDebit)}</div><div style={{fontSize:11,color:C.muted}}>{filteredDebit.length} entries</div></div>
+          <div style={{background:"#F8FAFC",borderRadius:13,padding:"13px 14px",borderLeft:`4px solid ${C.green}`}}><div style={{fontSize:10,color:C.muted,textTransform:"uppercase",fontWeight:700}}>Credit / Return</div><div style={{fontSize:20,fontWeight:900,color:C.green}}>₹{fmt(totCredit)}</div><div style={{fontSize:11,color:C.muted}}>{filteredCredit.length} entries</div></div>
+        </div>
+        {(totDebit>0||totCredit>0)?
+        <ResponsiveContainer width="100%" height={220}>
+          <BarChart data={notesChartData} margin={{top:4,right:4,left:0,bottom:4}}>
+            <CartesianGrid strokeDasharray="3 3" stroke="#F0F4F8"/>
+            <XAxis dataKey="name" tick={{fontSize:11}} tickLine={false}/>
+            <YAxis tickFormatter={v=>v>=100000?`₹${(v/100000).toFixed(0)}L`:`₹${(v/1000).toFixed(0)}K`} tick={{fontSize:10}} tickLine={false} axisLine={false}/>
+            <Tooltip formatter={v=>`₹${fmt(v)}`}/>
+            <Bar dataKey="value" radius={[6,6,0,0]} barSize={60}>
+              <Cell fill={C.red}/><Cell fill={C.green}/>
+            </Bar>
+          </BarChart>
+        </ResponsiveContainer>
+        :<Empty text="No debit/credit notes for selected year."/>}
       </>}
     </div>
   </div>);
@@ -1027,6 +1045,12 @@ function CommissionTab({data,generatePDF}){
 // ─── MASTERS TAB ─────────────────────────────────────────────────
 function MastersTab({data,onAdd,onDel,onEdit,onImportExcel}){
   const[view,setView]=useState("customers");
+  const[search,setSearch]=useState("");
+  const q=search.trim().toLowerCase();
+  const customers=data.customers.filter(c=>!q||c.name.toLowerCase().includes(q)||(c.phone||"").includes(q)||(c.city||"").toLowerCase().includes(q));
+  const suppliers=data.suppliers.filter(s=>!q||s.name.toLowerCase().includes(q)||(s.city||"").toLowerCase().includes(q));
+  const products=data.products.filter(p=>!q||p.name.toLowerCase().includes(q)||(p.supplierName||"").toLowerCase().includes(q));
+  const searchPlaceholder=view==="customers"?"🔍 Search customer name, phone, city…":view==="suppliers"?"🔍 Search supplier name, city…":"🔍 Search product name, supplier…";
   return(<div>
     <div style={{background:`linear-gradient(135deg,${C.navyMid},${C.navy})`,borderRadius:12,padding:"14px 16px",marginBottom:14,border:"1px solid rgba(232,201,126,0.3)"}}>
       <div style={{fontWeight:800,fontSize:14,color:C.gold,marginBottom:6}}>Import from Excel</div>
@@ -1034,10 +1058,11 @@ function MastersTab({data,onAdd,onDel,onEdit,onImportExcel}){
       <button onClick={onImportExcel} style={{background:C.gold,color:C.navy,border:"none",borderRadius:10,padding:"12px 20px",fontSize:14,fontWeight:800,cursor:"pointer",width:"100%",minHeight:46}}>Import Excel File (.xlsx)</button>
     </div>
     <SegCtrl options={[{v:"customers",l:`Customers (${data.customers.length})`},{v:"suppliers",l:`Suppliers (${data.suppliers.length})`},{v:"products",l:`Products (${data.products.length})`}]} val={view} onChange={setView}/>
+    <input placeholder={searchPlaceholder} value={search} onChange={e=>setSearch(e.target.value)} style={{...IS,margin:"10px 0"}}/>
     {view==="customers"&&<>
-      <div style={{margin:"12px 0 8px"}}><Btn color={C.navy} onClick={()=>onAdd({type:"customer"})}>+ Add Customer</Btn></div>
-      {data.customers.length===0&&<Empty text="No customers yet. Import Excel to auto-populate."/>}
-      {data.customers.map(c=>(<div key={c.id} style={{background:C.card,borderRadius:13,padding:"13px 15px",marginBottom:10,boxShadow:"0 1px 8px rgba(0,0,0,0.06)"}}>
+      <div style={{margin:"2px 0 8px"}}><Btn color={C.navy} onClick={()=>onAdd({type:"customer"})}>+ Add Customer</Btn></div>
+      {customers.length===0&&<Empty text={q?"No customers match your search.":"No customers yet. Import Excel to auto-populate."}/>}
+      {customers.map(c=>(<div key={c.id} style={{background:C.card,borderRadius:13,padding:"13px 15px",marginBottom:10,boxShadow:"0 1px 8px rgba(0,0,0,0.06)"}}>
         <Row><B>{c.name}</B><span style={{fontSize:11,background:"#F0F4F8",padding:"3px 9px",borderRadius:10,color:C.muted,fontWeight:600}}>{c.type}</span></Row>
         {c.phone&&<Mute>{c.phone}</Mute>}{c.city&&<Mute>{c.city}</Mute>}{c.gstin&&<Mute>GST: {c.gstin}</Mute>}
         <Mute>Credit Days: {c.creditDays||"30"} days</Mute>
@@ -1048,9 +1073,9 @@ function MastersTab({data,onAdd,onDel,onEdit,onImportExcel}){
       </div>))}
     </>}
     {view==="suppliers"&&<>
-      <div style={{margin:"12px 0 8px"}}><Btn color={C.navy} onClick={()=>onAdd({type:"supplier"})}>+ Add Supplier</Btn></div>
-      {data.suppliers.length===0&&<Empty text="No suppliers yet."/>}
-      {data.suppliers.map(s=>(<div key={s.id} style={{background:C.card,borderRadius:13,padding:"13px 15px",marginBottom:10,boxShadow:"0 1px 8px rgba(0,0,0,0.06)"}}>
+      <div style={{margin:"2px 0 8px"}}><Btn color={C.navy} onClick={()=>onAdd({type:"supplier"})}>+ Add Supplier</Btn></div>
+      {suppliers.length===0&&<Empty text={q?"No suppliers match your search.":"No suppliers yet."}/>}
+      {suppliers.map(s=>(<div key={s.id} style={{background:C.card,borderRadius:13,padding:"13px 15px",marginBottom:10,boxShadow:"0 1px 8px rgba(0,0,0,0.06)"}}>
         <B>{s.name}</B>{s.phone&&<Mute>{s.phone}</Mute>}{s.city&&<Mute>{s.city}</Mute>}
         <div style={{display:"flex",gap:8,marginTop:10}}>
           <button onClick={()=>onEdit("supplier",s)} style={{background:"#EAF4FC",color:C.blue,border:"none",borderRadius:8,padding:"7px 14px",fontSize:12,fontWeight:700,cursor:"pointer"}}>Edit</button>
@@ -1059,9 +1084,9 @@ function MastersTab({data,onAdd,onDel,onEdit,onImportExcel}){
       </div>))}
     </>}
     {view==="products"&&<>
-      <div style={{margin:"12px 0 8px"}}><Btn color={C.navy} onClick={()=>onAdd({type:"product"})}>+ Add Product</Btn></div>
-      {data.products.length===0&&<Empty text="No products yet."/>}
-      {data.products.map(p=>(<div key={p.id} style={{background:C.card,borderRadius:13,padding:"13px 15px",marginBottom:10,boxShadow:"0 1px 8px rgba(0,0,0,0.06)"}}>
+      <div style={{margin:"2px 0 8px"}}><Btn color={C.navy} onClick={()=>onAdd({type:"product"})}>+ Add Product</Btn></div>
+      {products.length===0&&<Empty text={q?"No products match your search.":"No products yet."}/>}
+      {products.map(p=>(<div key={p.id} style={{background:C.card,borderRadius:13,padding:"13px 15px",marginBottom:10,boxShadow:"0 1px 8px rgba(0,0,0,0.06)"}}>
         <Row><B>{p.name}</B><span style={{fontSize:11,color:C.muted}}>{p.unit}</span></Row>
         {p.supplierName&&<Mute>{p.supplierName}</Mute>}
         <div style={{display:"flex",gap:8,marginTop:10}}>
@@ -1181,21 +1206,39 @@ function ReportsTab({data,tradingOut,tots,generatePDF}){
         <div style={{fontSize:22,fontWeight:900,color:C.blue}}>₹{fmt(totSales)}</div>
       </div>
 
-      {/* Date-wise */}
-      {salesView==="date"&&[...filteredSales].sort((a,b)=>new Date(b.date)-new Date(a.date)).map(s=>(
-        <div key={s.id} style={{background:C.card,borderRadius:11,padding:"12px 14px",marginBottom:8,boxShadow:"0 1px 6px rgba(0,0,0,0.05)"}}>
-          <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start"}}>
-            <div style={{flex:1,paddingRight:10}}>
-              <B style={{fontSize:13.5,color:C.navy}}>{s.customerName}</B>
-              {s.billNo&&<Mute>📋 {s.billNo}</Mute>}
-              <Mute>📅 {fmtD(s.date)}</Mute>
-              {s.productName&&<Mute>📦 {s.productName}</Mute>}
-              <Mute>📏 {fmt(s.meters)} m @ ₹{fmt(s.rate)}/m</Mute>
-            </div>
-            <span style={{fontWeight:900,color:C.blue,fontSize:15}}>₹{fmt(s.amount)}</span>
+      {/* Date-wise — 6 column table: Customer, Bill Date, Bill No, Qty, Rate, Amount */}
+      {salesView==="date"&&(()=>{
+        const rows=[...filteredSales].sort((a,b)=>new Date(b.date)-new Date(a.date));
+        if(rows.length===0)return <Empty text="No sales found."/>;
+        const th={padding:"9px 10px",textAlign:"left",fontSize:10.5,color:C.gold,background:C.navy,whiteSpace:"nowrap",position:"sticky",top:0};
+        const td={padding:"8px 10px",fontSize:12,color:C.navy,whiteSpace:"nowrap",borderBottom:`1px solid ${C.border}`};
+        return(
+          <div style={{background:C.card,borderRadius:12,boxShadow:"0 1px 8px rgba(0,0,0,0.06)",overflowX:"auto",marginBottom:10}}>
+            <table style={{borderCollapse:"collapse",width:"100%",minWidth:640}}>
+              <thead><tr>
+                <th style={{...th,borderRadius:"12px 0 0 0"}}>Customer</th>
+                <th style={th}>Bill Date</th>
+                <th style={th}>Bill No</th>
+                <th style={{...th,textAlign:"right"}}>Qty (m)</th>
+                <th style={{...th,textAlign:"right"}}>Rate</th>
+                <th style={{...th,textAlign:"right",borderRadius:"0 12px 0 0"}}>Amount</th>
+              </tr></thead>
+              <tbody>
+                {rows.map((s,i)=>(
+                  <tr key={s.id} style={{background:i%2===0?"#fff":"#FAFBFC"}}>
+                    <td style={{...td,fontWeight:700}}>{s.customerName}</td>
+                    <td style={td}>{fmtD(s.date)}</td>
+                    <td style={td}>{s.billNo||"—"}</td>
+                    <td style={{...td,textAlign:"right"}}>{fmt(s.meters)}</td>
+                    <td style={{...td,textAlign:"right"}}>₹{fmt(s.rate)}</td>
+                    <td style={{...td,textAlign:"right",fontWeight:900,color:C.blue}}>₹{fmt(s.amount)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           </div>
-        </div>
-      ))}
+        );
+      })()}
 
       {/* Customer-wise */}
       {salesView==="customer"&&(()=>{
