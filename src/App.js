@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useMemo } from "react";
 import * as XLSX from "xlsx";
-import { BarChart, Bar, LineChart, Line, PieChart, Pie, Cell, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from "recharts";
+import { BarChart, Bar, LineChart, Line, AreaChart, Area, ComposedChart, PieChart, Pie, Cell, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from "recharts";
 
 const SK = "fabric-sales-v3-trading";
 const EMPTY = { customers:[], suppliers:[], products:[], tradingSales:[], tradingPayments:[], debitNotes:[], creditNotes:[], enquiries:[] };
@@ -222,9 +222,9 @@ function DashboardTab({data,tots,onNav,tradingOut}){
       <KpiCard icon="💰" label="Commission"   val={totComm}        color={C.purple}/>
     </div>
     <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(140px,1fr))",gap:10,marginBottom:16}}>
-      {[{icon:"📈",t:"Analytics",bg:C.blue},{icon:"⏳",t:"Outstanding",bg:C.red},{icon:"📅",t:"Aging",bg:C.orange},{icon:"📋",t:"Reports",bg:C.purple}].map(q=>(
+      {[{icon:"📈",t:"Analytics",l:"Analytics",bg:C.blue},{icon:"⏳",t:"Outstanding",l:"Outstanding",bg:C.red},{icon:"📅",t:"Aging",l:"Ageing",bg:C.orange},{icon:"📋",t:"Reports",l:"Reports",bg:C.purple}].map(q=>(
         <button key={q.t} onClick={()=>onNav(q.t)} style={{background:q.bg,color:"#fff",border:"none",borderRadius:13,padding:"14px 10px",fontSize:13,fontWeight:700,cursor:"pointer",textAlign:"center"}}>
-          <div style={{fontSize:22,marginBottom:4}}>{q.icon}</div>{q.t}
+          <div style={{fontSize:22,marginBottom:4}}>{q.icon}</div>{q.l}
         </button>
       ))}
     </div>
@@ -433,13 +433,26 @@ function AgingTab({data,generatePDF}){
     const map={};
     data.tradingSales.forEach(s=>{if(!map[s.customerName])map[s.customerName]={name:s.customerName,invoices:[]};map[s.customerName].invoices.push({date:s.date,amount:+s.amount||0,id:s.id,productName:s.productName,billNo:s.billNo});});
     const paid={};data.tradingPayments.forEach(p=>{paid[p.customerName]=(paid[p.customerName]||0)+(+p.amount||0);});
+    const credit={};(data.creditNotes||[]).forEach(n=>{credit[n.customerName]=(credit[n.customerName]||0)+(+n.amount||0);});
+    const debitByCust={};(data.debitNotes||[]).forEach(n=>{if(!debitByCust[n.customerName])debitByCust[n.customerName]=[];debitByCust[n.customerName].push(n);});
+    // Ensure customers who only have debit notes (no sales) still show up
+    Object.keys(debitByCust).forEach(name=>{if(!map[name])map[name]={name,invoices:[]};});
     return Object.values(map).map(v=>{
-      let rem=paid[v.name]||0;const bk={b0:0,b30:0,b60:0,b90:0,b120:0};const openInvoices=[];
+      // Credit notes reduce outstanding the same way payments do — pool them together (matches Outstanding tab)
+      let rem=(paid[v.name]||0)+(credit[v.name]||0);
+      const bk={b0:0,b30:0,b60:0,b90:0,b120:0};const openInvoices=[];
       [...v.invoices].sort((a,b)=>new Date(a.date)-new Date(b.date)).forEach(inv=>{
         let amt=inv.amount;const d=Math.min(amt,rem);amt-=d;rem-=d;if(amt<=0)return;
         const days=Math.floor((todayMs-new Date(inv.date).setHours(0,0,0,0))/86400000);
         let bucket;if(days<=30){bk.b0+=amt;bucket="0-30 Days";}else if(days<=60){bk.b30+=amt;bucket="31-60 Days";}else if(days<=90){bk.b60+=amt;bucket="61-90 Days";}else if(days<=120){bk.b90+=amt;bucket="91-120 Days";}else{bk.b120+=amt;bucket="120+ Days";}
         openInvoices.push({...inv,outstanding:amt,days,bucket});
+      });
+      // Debit notes always increase outstanding (they are not offset by the paid/credit pool) — age from their own date
+      (debitByCust[v.name]||[]).forEach(n=>{
+        const amt=+n.amount||0;if(amt<=0)return;
+        const days=Math.floor((todayMs-new Date(n.date).setHours(0,0,0,0))/86400000);
+        let bucket;if(days<=30){bk.b0+=amt;bucket="0-30 Days";}else if(days<=60){bk.b30+=amt;bucket="31-60 Days";}else if(days<=90){bk.b60+=amt;bucket="61-90 Days";}else if(days<=120){bk.b90+=amt;bucket="91-120 Days";}else{bk.b120+=amt;bucket="120+ Days";}
+        openInvoices.push({date:n.date,amount:amt,id:n.id,productName:"Debit Note",billNo:n.noteNo||"DN",outstanding:amt,days,bucket});
       });
       const total=Object.values(bk).reduce((a,b)=>a+b,0);
       return{...v,bk,total,openInvoices};
@@ -482,7 +495,7 @@ function AgingTab({data,generatePDF}){
 
 // ─── ANALYTICS TAB ───────────────────────────────────────────────
 function AnalyticsTab({data,tradingOut}){
-  const[chartType,setChartType]=useState("monthly");
+  const[chartType,setChartType]=useState("overview");
   const[fy,setFY]=useState(ALL_FY);
   const allFYs=useMemo(()=>getAvailableFYs(data.tradingSales),[data]);
   const filtered=useMemo(()=>filterByFY(data.tradingSales,fy),[data,fy]);
@@ -534,11 +547,25 @@ function AnalyticsTab({data,tradingOut}){
     return Object.values(map).sort((a,b)=>b.sales-a.sales).slice(0,8);
   },[filtered]);
 
+  const topCustomersTable=useMemo(()=>{
+    const map={};
+    filtered.forEach(s=>{if(!map[s.customerName])map[s.customerName]={name:s.customerName,sales:0,bills:0};map[s.customerName].sales+=+s.amount||0;map[s.customerName].bills+=1;});
+    const total=Object.values(map).reduce((a,v)=>a+v.sales,0)||1;
+    return Object.values(map).sort((a,b)=>b.sales-a.sales).slice(0,10).map(v=>({...v,pct:(v.sales/total*100)}));
+  },[filtered]);
+
   // Products for selected FY
   const products=useMemo(()=>{
     const map={};
     filtered.forEach(s=>{const p=s.productName||"Unknown";if(!map[p])map[p]={name:p.length>16?p.slice(0,16)+"…":p,value:0};map[p].value+=+s.amount||0;});
     return Object.values(map).sort((a,b)=>b.value-a.value).slice(0,7);
+  },[filtered]);
+
+  const productsTable=useMemo(()=>{
+    const map={};
+    filtered.forEach(s=>{const p=s.productName||"Unknown";if(!map[p])map[p]={name:p,value:0,meters:0};map[p].value+=+s.amount||0;map[p].meters+=+s.meters||0;});
+    const total=Object.values(map).reduce((a,v)=>a+v.value,0)||1;
+    return Object.values(map).sort((a,b)=>b.value-a.value).slice(0,10).map(v=>({...v,pct:(v.value/total*100)}));
   },[filtered]);
 
   // FY summary cards
@@ -575,6 +602,43 @@ function AnalyticsTab({data,tradingOut}){
   const totCredit=filteredCredit.reduce((a,n)=>a+(+n.amount||0),0);
   const notesChartData=[{name:"Debit Notes",value:totDebit},{name:"Credit Notes",value:totCredit}];
 
+  // Cumulative sales/collections trend (for the Overview composed chart) — within selected FY
+  const cumulativeTrend=useMemo(()=>{
+    let cumS=0,cumP=0;
+    return monthly.map(m=>{cumS+=m.sales;cumP+=m.payments;return{...m,netOutstanding:Math.max(0,cumS-cumP)};});
+  },[monthly]);
+
+  // Ageing snapshot — always current (live balance), independent of FY filter, matches Ageing tab's corrected FIFO logic
+  const ageingSnapshot=useMemo(()=>{
+    const todayMs=new Date().setHours(0,0,0,0);
+    const map={};
+    data.tradingSales.forEach(s=>{if(!map[s.customerName])map[s.customerName]={name:s.customerName,invoices:[]};map[s.customerName].invoices.push({date:s.date,amount:+s.amount||0});});
+    const paid={};data.tradingPayments.forEach(p=>{paid[p.customerName]=(paid[p.customerName]||0)+(+p.amount||0);});
+    const credit={};(data.creditNotes||[]).forEach(n=>{credit[n.customerName]=(credit[n.customerName]||0)+(+n.amount||0);});
+    const debitByCust={};(data.debitNotes||[]).forEach(n=>{if(!debitByCust[n.customerName])debitByCust[n.customerName]=[];debitByCust[n.customerName].push(n);});
+    Object.keys(debitByCust).forEach(name=>{if(!map[name])map[name]={name,invoices:[]};});
+    const bucketTotals={b0:0,b30:0,b60:0,b90:0,b120:0};
+    const customerRows=[];
+    Object.values(map).forEach(v=>{
+      let rem=(paid[v.name]||0)+(credit[v.name]||0);
+      const bk={b0:0,b30:0,b60:0,b90:0,b120:0};
+      [...v.invoices].sort((a,b)=>new Date(a.date)-new Date(b.date)).forEach(inv=>{
+        let amt=inv.amount;const d=Math.min(amt,rem);amt-=d;rem-=d;if(amt<=0)return;
+        const days=Math.floor((todayMs-new Date(inv.date).setHours(0,0,0,0))/86400000);
+        if(days<=30)bk.b0+=amt;else if(days<=60)bk.b30+=amt;else if(days<=90)bk.b60+=amt;else if(days<=120)bk.b90+=amt;else bk.b120+=amt;
+      });
+      (debitByCust[v.name]||[]).forEach(n=>{
+        const amt=+n.amount||0;if(amt<=0)return;
+        const days=Math.floor((todayMs-new Date(n.date).setHours(0,0,0,0))/86400000);
+        if(days<=30)bk.b0+=amt;else if(days<=60)bk.b30+=amt;else if(days<=90)bk.b60+=amt;else if(days<=120)bk.b90+=amt;else bk.b120+=amt;
+      });
+      const total=Object.values(bk).reduce((a,b)=>a+b,0);
+      if(total>0){Object.keys(bk).forEach(k=>bucketTotals[k]+=bk[k]);customerRows.push({name:v.name,total,bk});}
+    });
+    const chartData=[{label:"0-30d",value:bucketTotals.b0,color:C.green},{label:"31-60d",value:bucketTotals.b30,color:C.orange},{label:"61-90d",value:bucketTotals.b60,color:"#E67E22"},{label:"91-120d",value:bucketTotals.b90,color:C.red},{label:"120d+",value:bucketTotals.b120,color:"#922B21"}];
+    return{chartData,customerRows:customerRows.sort((a,b)=>b.total-a.total).slice(0,8),grandTotal:Object.values(bucketTotals).reduce((a,b)=>a+b,0)};
+  },[data]);
+
   return(<div>
     {/* FY Selector */}
     <div style={{marginBottom:14}}>
@@ -602,12 +666,35 @@ function AnalyticsTab({data,tradingOut}){
 
     {/* Chart Type Selector */}
     <div style={{display:"flex",overflowX:"auto",gap:6,marginBottom:12,scrollbarWidth:"none"}}>
-      {[{v:"monthly",l:"📅 Monthly"},{v:"trend",l:"📈 Trend"},{v:"yoy",l:"📊 Year-on-Year"},{v:"customer",l:"👥 Customers"},{v:"product",l:"📦 Products"},{v:"fycompare",l:"📈 FY Summary"},{v:"notes",l:"↩️ Debit/Credit"}].map(ct=>(
+      {[{v:"overview",l:"🧭 Overview"},{v:"monthly",l:"📅 Monthly"},{v:"trend",l:"📈 Trend"},{v:"yoy",l:"📊 Year-on-Year"},{v:"customer",l:"👥 Customers"},{v:"product",l:"📦 Products"},{v:"ageing",l:"⏳ Ageing"},{v:"fycompare",l:"📈 FY Summary"},{v:"notes",l:"↩️ Debit/Credit"}].map(ct=>(
         <button key={ct.v} onClick={()=>setChartType(ct.v)} style={{flex:"0 0 auto",padding:"9px 13px",borderRadius:20,fontSize:12,fontWeight:chartType===ct.v?700:500,border:`1.5px solid ${chartType===ct.v?C.navy:C.border}`,background:chartType===ct.v?C.navy:"#fff",color:chartType===ct.v?C.gold:"#666",cursor:"pointer",whiteSpace:"nowrap",minHeight:38}}>{ct.l}</button>
       ))}
     </div>
 
     <div style={{background:C.card,borderRadius:14,padding:16,boxShadow:"0 1px 8px rgba(0,0,0,0.06)"}}>
+      {chartType==="overview"&&<>
+        <div style={{fontWeight:700,fontSize:14,color:C.navy,marginBottom:4}}>Business Overview {fy!==ALL_FY?`— FY ${fy}`:""}</div>
+        <div style={{fontSize:11,color:C.muted,marginBottom:14}}>Monthly Sales & Collections with running Net Outstanding</div>
+        {cumulativeTrend.length===0?<Empty text="No data for selected year."/>:
+        <ResponsiveContainer width="100%" height={280}>
+          <ComposedChart data={cumulativeTrend} margin={{top:4,right:8,left:0,bottom:4}}>
+            <CartesianGrid strokeDasharray="3 3" stroke="#F0F4F8"/>
+            <XAxis dataKey="label" tick={{fontSize:10}} tickLine={false}/>
+            <YAxis tickFormatter={v=>v>=100000?`₹${(v/100000).toFixed(0)}L`:`₹${(v/1000).toFixed(0)}K`} tick={{fontSize:10}} tickLine={false} axisLine={false}/>
+            <Tooltip formatter={v=>`₹${fmt(v)}`}/>
+            <Legend iconSize={10} wrapperStyle={{fontSize:11}}/>
+            <Bar dataKey="sales" fill={C.blue} radius={[4,4,0,0]} name="Sales" barSize={14}/>
+            <Bar dataKey="payments" fill={C.green} radius={[4,4,0,0]} name="Collections" barSize={14}/>
+            <Line type="monotone" dataKey="netOutstanding" stroke={C.red} strokeWidth={2.5} dot={{r:3,fill:C.red}} name="Net Outstanding (cum.)"/>
+          </ComposedChart>
+        </ResponsiveContainer>}
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8,marginTop:14}}>
+          <div style={{background:"#F8FAFC",borderRadius:10,padding:"10px 12px",borderLeft:`3px solid ${C.blue}`}}><div style={{fontSize:9.5,color:C.muted,fontWeight:600}}>SALES</div><div style={{fontSize:13,fontWeight:900,color:C.blue}}>₹{fmt(totSales)}</div></div>
+          <div style={{background:"#F8FAFC",borderRadius:10,padding:"10px 12px",borderLeft:`3px solid ${C.green}`}}><div style={{fontSize:9.5,color:C.muted,fontWeight:600}}>COLLECTED</div><div style={{fontSize:13,fontWeight:900,color:C.green}}>₹{fmt(totPays)}</div></div>
+          <div style={{background:"#F8FAFC",borderRadius:10,padding:"10px 12px",borderLeft:`3px solid ${C.red}`}}><div style={{fontSize:9.5,color:C.muted,fontWeight:600}}>COLLECTION %</div><div style={{fontSize:13,fontWeight:900,color:C.red}}>{totSales>0?(totPays/totSales*100).toFixed(1):0}%</div></div>
+        </div>
+      </>}
+
       {chartType==="monthly"&&<>
         <div style={{fontWeight:700,fontSize:14,color:C.navy,marginBottom:4}}>Monthly Sales {fy!==ALL_FY?`— FY ${fy}`:""}</div>
         <div style={{fontSize:11,color:C.muted,marginBottom:14}}>Sales vs Collections per month</div>
@@ -627,18 +714,28 @@ function AnalyticsTab({data,tradingOut}){
 
       {chartType==="trend"&&<>
         <div style={{fontWeight:700,fontSize:14,color:C.navy,marginBottom:4}}>Sales Trend {fy!==ALL_FY?`— FY ${fy}`:""}</div>
-        <div style={{fontSize:11,color:C.muted,marginBottom:14}}>Month-over-month line trend — Sales vs Collections</div>
+        <div style={{fontSize:11,color:C.muted,marginBottom:14}}>Month-over-month trend — Sales vs Collections</div>
         {monthly.length===0?<Empty text="No data for selected year."/>:
         <ResponsiveContainer width="100%" height={260}>
-          <LineChart data={monthly} margin={{top:4,right:8,left:0,bottom:4}}>
+          <AreaChart data={monthly} margin={{top:4,right:8,left:0,bottom:4}}>
+            <defs>
+              <linearGradient id="gradSales" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="5%" stopColor={C.blue} stopOpacity={0.35}/>
+                <stop offset="95%" stopColor={C.blue} stopOpacity={0.02}/>
+              </linearGradient>
+              <linearGradient id="gradPay" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="5%" stopColor={C.green} stopOpacity={0.35}/>
+                <stop offset="95%" stopColor={C.green} stopOpacity={0.02}/>
+              </linearGradient>
+            </defs>
             <CartesianGrid strokeDasharray="3 3" stroke="#F0F4F8"/>
             <XAxis dataKey="label" tick={{fontSize:10}} tickLine={false}/>
             <YAxis tickFormatter={v=>v>=100000?`₹${(v/100000).toFixed(0)}L`:`₹${(v/1000).toFixed(0)}K`} tick={{fontSize:10}} tickLine={false} axisLine={false}/>
             <Tooltip formatter={v=>`₹${fmt(v)}`}/>
             <Legend iconSize={10} wrapperStyle={{fontSize:11}}/>
-            <Line type="monotone" dataKey="sales" stroke={C.blue} strokeWidth={2.5} dot={{r:4,fill:C.blue}} name="Sales"/>
-            <Line type="monotone" dataKey="payments" stroke={C.green} strokeWidth={2.5} dot={{r:4,fill:C.green}} name="Collections"/>
-          </LineChart>
+            <Area type="monotone" dataKey="sales" stroke={C.blue} strokeWidth={2.5} fill="url(#gradSales)" name="Sales"/>
+            <Area type="monotone" dataKey="payments" stroke={C.green} strokeWidth={2.5} fill="url(#gradPay)" name="Collections"/>
+          </AreaChart>
         </ResponsiveContainer>}
       </>}
 
@@ -661,7 +758,7 @@ function AnalyticsTab({data,tradingOut}){
       {chartType==="customer"&&<>
         <div style={{fontWeight:700,fontSize:14,color:C.navy,marginBottom:4}}>Top Customers {fy!==ALL_FY?`— FY ${fy}`:""}</div>
         <div style={{fontSize:11,color:C.muted,marginBottom:14}}>By sales volume</div>
-        {topCustomers.length===0?<Empty text="No data."/>:
+        {topCustomers.length===0?<Empty text="No data."/>:<>
         <ResponsiveContainer width="100%" height={300}>
           <BarChart data={topCustomers} layout="vertical" margin={{top:0,right:8,left:70,bottom:0}}>
             <CartesianGrid strokeDasharray="3 3" stroke="#F0F4F8" horizontal={false}/>
@@ -670,13 +767,36 @@ function AnalyticsTab({data,tradingOut}){
             <Tooltip formatter={v=>`₹${fmt(v)}`}/>
             <Bar dataKey="sales" fill={C.blue} radius={[0,5,5,0]} name="Sales" barSize={12}/>
           </BarChart>
-        </ResponsiveContainer>}
+        </ResponsiveContainer>
+        <div style={{marginTop:16,overflowX:"auto"}}>
+          <table style={{borderCollapse:"collapse",width:"100%",minWidth:420}}>
+            <thead><tr>
+              <th style={{padding:"7px 8px",textAlign:"left",fontSize:10,color:C.gold,background:C.navy,borderRadius:"8px 0 0 0"}}>#</th>
+              <th style={{padding:"7px 8px",textAlign:"left",fontSize:10,color:C.gold,background:C.navy}}>Customer</th>
+              <th style={{padding:"7px 8px",textAlign:"right",fontSize:10,color:C.gold,background:C.navy}}>Bills</th>
+              <th style={{padding:"7px 8px",textAlign:"right",fontSize:10,color:C.gold,background:C.navy}}>Sales</th>
+              <th style={{padding:"7px 8px",textAlign:"right",fontSize:10,color:C.gold,background:C.navy,borderRadius:"0 8px 0 0"}}>Share</th>
+            </tr></thead>
+            <tbody>
+              {topCustomersTable.map((v,i)=>(
+                <tr key={v.name} style={{background:i%2===0?"#fff":"#FAFBFC"}}>
+                  <td style={{padding:"7px 8px",fontSize:11.5,color:C.muted,borderBottom:`1px solid ${C.border}`}}>{i+1}</td>
+                  <td style={{padding:"7px 8px",fontSize:12,fontWeight:700,color:C.navy,borderBottom:`1px solid ${C.border}`}}>{v.name}</td>
+                  <td style={{padding:"7px 8px",fontSize:12,textAlign:"right",color:C.muted,borderBottom:`1px solid ${C.border}`}}>{v.bills}</td>
+                  <td style={{padding:"7px 8px",fontSize:12,textAlign:"right",fontWeight:800,color:C.blue,borderBottom:`1px solid ${C.border}`}}>₹{fmt(v.sales)}</td>
+                  <td style={{padding:"7px 8px",fontSize:12,textAlign:"right",color:C.muted,borderBottom:`1px solid ${C.border}`}}>{v.pct.toFixed(1)}%</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        </>}
       </>}
 
       {chartType==="product"&&<>
         <div style={{fontWeight:700,fontSize:14,color:C.navy,marginBottom:4}}>Sales by Product {fy!==ALL_FY?`— FY ${fy}`:""}</div>
         <div style={{fontSize:11,color:C.muted,marginBottom:14}}>Top 7 products by value</div>
-        {products.length===0?<Empty text="No data."/>:
+        {products.length===0?<Empty text="No data."/>:<>
         <ResponsiveContainer width="100%" height={260}>
           <PieChart>
             <Pie data={products} cx="50%" cy="50%" outerRadius={95} innerRadius={40} dataKey="value" nameKey="name"
@@ -686,7 +806,70 @@ function AnalyticsTab({data,tradingOut}){
             <Tooltip formatter={v=>`₹${fmt(v)}`}/>
             <Legend iconSize={10} wrapperStyle={{fontSize:10}}/>
           </PieChart>
-        </ResponsiveContainer>}
+        </ResponsiveContainer>
+        <div style={{marginTop:16,overflowX:"auto"}}>
+          <table style={{borderCollapse:"collapse",width:"100%",minWidth:420}}>
+            <thead><tr>
+              <th style={{padding:"7px 8px",textAlign:"left",fontSize:10,color:C.gold,background:C.navy,borderRadius:"8px 0 0 0"}}>#</th>
+              <th style={{padding:"7px 8px",textAlign:"left",fontSize:10,color:C.gold,background:C.navy}}>Product</th>
+              <th style={{padding:"7px 8px",textAlign:"right",fontSize:10,color:C.gold,background:C.navy}}>Meters</th>
+              <th style={{padding:"7px 8px",textAlign:"right",fontSize:10,color:C.gold,background:C.navy}}>Sales</th>
+              <th style={{padding:"7px 8px",textAlign:"right",fontSize:10,color:C.gold,background:C.navy,borderRadius:"0 8px 0 0"}}>Share</th>
+            </tr></thead>
+            <tbody>
+              {productsTable.map((v,i)=>(
+                <tr key={v.name} style={{background:i%2===0?"#fff":"#FAFBFC"}}>
+                  <td style={{padding:"7px 8px",fontSize:11.5,color:C.muted,borderBottom:`1px solid ${C.border}`}}>{i+1}</td>
+                  <td style={{padding:"7px 8px",fontSize:12,fontWeight:700,color:C.navy,borderBottom:`1px solid ${C.border}`}}>{v.name}</td>
+                  <td style={{padding:"7px 8px",fontSize:12,textAlign:"right",color:C.muted,borderBottom:`1px solid ${C.border}`}}>{fmt(v.meters)}</td>
+                  <td style={{padding:"7px 8px",fontSize:12,textAlign:"right",fontWeight:800,color:C.teal,borderBottom:`1px solid ${C.border}`}}>₹{fmt(v.value)}</td>
+                  <td style={{padding:"7px 8px",fontSize:12,textAlign:"right",color:C.muted,borderBottom:`1px solid ${C.border}`}}>{v.pct.toFixed(1)}%</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        </>}
+      </>}
+
+      {chartType==="ageing"&&<>
+        <div style={{fontWeight:700,fontSize:14,color:C.navy,marginBottom:4}}>Ageing Snapshot</div>
+        <div style={{fontSize:11,color:C.muted,marginBottom:14}}>Live outstanding by age bucket — always current (not affected by FY filter)</div>
+        {ageingSnapshot.grandTotal===0?<Empty text="No outstanding found."/>:<>
+        <ResponsiveContainer width="100%" height={220}>
+          <BarChart data={ageingSnapshot.chartData} margin={{top:4,right:4,left:0,bottom:4}}>
+            <CartesianGrid strokeDasharray="3 3" stroke="#F0F4F8"/>
+            <XAxis dataKey="label" tick={{fontSize:10}} tickLine={false}/>
+            <YAxis tickFormatter={v=>v>=100000?`₹${(v/100000).toFixed(0)}L`:`₹${(v/1000).toFixed(0)}K`} tick={{fontSize:10}} tickLine={false} axisLine={false}/>
+            <Tooltip formatter={v=>`₹${fmt(v)}`}/>
+            <Bar dataKey="value" radius={[6,6,0,0]} barSize={40} name="Outstanding">
+              {ageingSnapshot.chartData.map((d,i)=><Cell key={i} fill={d.color}/>)}
+            </Bar>
+          </BarChart>
+        </ResponsiveContainer>
+        <div style={{marginTop:16,overflowX:"auto"}}>
+          <table style={{borderCollapse:"collapse",width:"100%",minWidth:520}}>
+            <thead><tr>
+              <th style={{padding:"7px 8px",textAlign:"left",fontSize:10,color:C.gold,background:C.navy,borderRadius:"8px 0 0 0"}}>Customer</th>
+              <th style={{padding:"7px 8px",textAlign:"right",fontSize:10,color:C.gold,background:C.navy}}>0-30d</th>
+              <th style={{padding:"7px 8px",textAlign:"right",fontSize:10,color:C.gold,background:C.navy}}>31-90d</th>
+              <th style={{padding:"7px 8px",textAlign:"right",fontSize:10,color:C.gold,background:C.navy}}>90d+</th>
+              <th style={{padding:"7px 8px",textAlign:"right",fontSize:10,color:C.gold,background:C.navy,borderRadius:"0 8px 0 0"}}>Total</th>
+            </tr></thead>
+            <tbody>
+              {ageingSnapshot.customerRows.map((v,i)=>(
+                <tr key={v.name} style={{background:i%2===0?"#fff":"#FAFBFC"}}>
+                  <td style={{padding:"7px 8px",fontSize:12,fontWeight:700,color:C.navy,borderBottom:`1px solid ${C.border}`}}>{v.name}</td>
+                  <td style={{padding:"7px 8px",fontSize:11.5,textAlign:"right",color:C.green,borderBottom:`1px solid ${C.border}`}}>₹{fmt(v.bk.b0)}</td>
+                  <td style={{padding:"7px 8px",fontSize:11.5,textAlign:"right",color:C.orange,borderBottom:`1px solid ${C.border}`}}>₹{fmt(v.bk.b30+v.bk.b60+v.bk.b90)}</td>
+                  <td style={{padding:"7px 8px",fontSize:11.5,textAlign:"right",color:"#922B21",borderBottom:`1px solid ${C.border}`}}>₹{fmt(v.bk.b120)}</td>
+                  <td style={{padding:"7px 8px",fontSize:12,textAlign:"right",fontWeight:900,color:C.red,borderBottom:`1px solid ${C.border}`}}>₹{fmt(v.total)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        </>}
       </>}
 
       {chartType==="fycompare"&&<>
@@ -1126,22 +1309,27 @@ function ReportsTab({data,tradingOut,tots,generatePDF}){
   );
 
   const[salesView,setSalesView]=useState("date"); // date | customer | product
+  const[custFilter,setCustFilter]=useState("");
+  const salesRows=useMemo(()=>{
+    const q=custFilter.trim().toLowerCase();
+    return q?filteredSales.filter(s=>(s.customerName||"").toLowerCase().includes(q)):filteredSales;
+  },[filteredSales,custFilter]);
 
   const doPDFSales=()=>{
     const pdfStyle=`<style>table{width:100%;border-collapse:collapse;}th{background:#0F1923;color:#E8C97E;padding:8px 10px;text-align:left;font-size:12px;border:1px solid #0F1923;}td{padding:7px 10px;border:1px solid #ddd;font-size:12px;}tr:nth-child(even){background:#f9f9f9;}.tot td{background:#0F1923;color:#E8C97E;font-weight:bold;border:none;}.grp-hdr td{background:#E8EDF4;font-weight:800;color:#0F1923;}</style>`;
-    const total=filteredSales.reduce((a,s)=>a+(+s.amount||0),0);
+    const total=salesRows.reduce((a,s)=>a+(+s.amount||0),0);
     if(salesView==="date"){
-      const rows=[...filteredSales].sort((a,b)=>new Date(b.date)-new Date(a.date)).map(s=>`<tr><td>${fmtD(s.date)}</td><td>${s.billNo||"—"}</td><td>${s.customerName}</td><td>${s.productName||"—"}</td><td style="text-align:right">${fmt(s.meters)} m</td><td style="text-align:right">₹${fmt(s.rate)}</td><td style="text-align:right;font-weight:bold">₹${fmt(s.amount)}</td></tr>`).join("");
-      generatePDF(`Sales Register — Date-wise${fy!==ALL_FY?" (FY "+fy+")":""}`,`${pdfStyle}<table><thead><tr><th>Date</th><th>Bill No</th><th>Customer</th><th>Product</th><th style="text-align:right">Qty (m)</th><th style="text-align:right">Rate</th><th style="text-align:right">Amount</th></tr></thead><tbody>${rows}<tr class="tot"><td colspan="6">TOTAL</td><td style="text-align:right">₹${fmt(total)}</td></tr></tbody></table>`);
+      const rows=[...salesRows].sort((a,b)=>new Date(b.date)-new Date(a.date)).map(s=>`<tr><td>${s.customerName}</td><td>${fmtD(s.date)}</td><td>${s.billNo||"—"}</td><td>${s.productName||"—"}</td><td style="text-align:right">${fmt(s.meters)} m</td><td style="text-align:right">₹${fmt(s.rate)}</td><td style="text-align:right;font-weight:bold">₹${fmt(s.amount)}</td></tr>`).join("");
+      generatePDF(`Sales Register — Date-wise${fy!==ALL_FY?" (FY "+fy+")":""}${custFilter?" — "+custFilter:""}`,`${pdfStyle}<table><thead><tr><th>Customer</th><th>Bill Date</th><th>Bill No</th><th>Product</th><th style="text-align:right">Qty (m)</th><th style="text-align:right">Rate</th><th style="text-align:right">Amount</th></tr></thead><tbody>${rows}<tr class="tot"><td colspan="6">TOTAL</td><td style="text-align:right">₹${fmt(total)}</td></tr></tbody></table>`);
     } else if(salesView==="customer"){
-      const custMap={};filteredSales.forEach(s=>{if(!custMap[s.customerName])custMap[s.customerName]={name:s.customerName,sales:[],total:0};custMap[s.customerName].sales.push(s);custMap[s.customerName].total+=+s.amount||0;});
+      const custMap={};salesRows.forEach(s=>{if(!custMap[s.customerName])custMap[s.customerName]={name:s.customerName,sales:[],total:0};custMap[s.customerName].sales.push(s);custMap[s.customerName].total+=+s.amount||0;});
       const blocks=Object.values(custMap).sort((a,b)=>b.total-a.total).map(c=>{
         const rows=c.sales.sort((a,b)=>new Date(a.date)-new Date(b.date)).map(s=>`<tr><td>${fmtD(s.date)}</td><td>${s.billNo||"—"}</td><td>${s.productName||"—"}</td><td style="text-align:right">${fmt(s.meters)} m</td><td style="text-align:right">₹${fmt(s.rate)}</td><td style="text-align:right;font-weight:bold">₹${fmt(s.amount)}</td></tr>`).join("");
         return `<tr class="grp-hdr"><td colspan="5"><b>${c.name}</b></td><td style="text-align:right;font-weight:bold">₹${fmt(c.total)}</td></tr>${rows}`;
       }).join("");
       generatePDF(`Sales Register — Customer-wise${fy!==ALL_FY?" (FY "+fy+")":""}`,`${pdfStyle}<table><thead><tr><th>Date</th><th>Bill No</th><th>Product</th><th style="text-align:right">Qty (m)</th><th style="text-align:right">Rate</th><th style="text-align:right">Amount</th></tr></thead><tbody>${blocks}<tr class="tot"><td colspan="5">TOTAL</td><td style="text-align:right">₹${fmt(total)}</td></tr></tbody></table>`);
     } else {
-      const prodMap={};filteredSales.forEach(s=>{const p=s.productName||"Unknown";if(!prodMap[p])prodMap[p]={name:p,sales:[],total:0,meters:0};prodMap[p].sales.push(s);prodMap[p].total+=+s.amount||0;prodMap[p].meters+=+s.meters||0;});
+      const prodMap={};salesRows.forEach(s=>{const p=s.productName||"Unknown";if(!prodMap[p])prodMap[p]={name:p,sales:[],total:0,meters:0};prodMap[p].sales.push(s);prodMap[p].total+=+s.amount||0;prodMap[p].meters+=+s.meters||0;});
       const blocks=Object.values(prodMap).sort((a,b)=>b.total-a.total).map(p=>{
         const rows=p.sales.sort((a,b)=>new Date(a.date)-new Date(b.date)).map(s=>`<tr><td>${fmtD(s.date)}</td><td>${s.billNo||"—"}</td><td>${s.customerName}</td><td style="text-align:right">${fmt(s.meters)} m</td><td style="text-align:right">₹${fmt(s.rate)}</td><td style="text-align:right;font-weight:bold">₹${fmt(s.amount)}</td></tr>`).join("");
         return `<tr class="grp-hdr"><td colspan="4"><b>${p.name}</b> — ${fmt(p.meters)} m</td><td style="text-align:right;font-weight:bold">₹${fmt(p.total)}</td></tr>${rows}`;
@@ -1182,7 +1370,7 @@ function ReportsTab({data,tradingOut,tots,generatePDF}){
     generatePDF(`Commission Statement${fy!==ALL_FY?" — FY "+fy:""}`,`${pdfStyle}<table><thead><tr><th style="text-align:center">#</th><th>Customer</th><th style="text-align:right">Bills Cleared</th><th style="text-align:right">Meters</th><th style="text-align:right">Commission</th></tr></thead><tbody>${rows}<tr class="tot"><td colspan="4" style="text-align:right">TOTAL</td><td style="text-align:right">₹${fmt(totalCommission)}</td></tr></tbody></table>`);
   };
 
-  const totSales=filteredSales.reduce((a,s)=>a+(+s.amount||0),0);
+  const totSales=salesRows.reduce((a,s)=>a+(+s.amount||0),0);
 
   return(<div>
     <div style={{display:"flex",overflowX:"auto",gap:8,marginBottom:12,scrollbarWidth:"none"}}>
@@ -1197,28 +1385,30 @@ function ReportsTab({data,tradingOut,tots,generatePDF}){
           <button key={o.v} onClick={()=>setSalesView(o.v)} style={{flex:1,padding:"11px 4px",fontSize:11.5,fontWeight:salesView===o.v?700:500,color:salesView===o.v?"#E8C97E":C.muted,background:salesView===o.v?C.navy:"transparent",border:"none",cursor:"pointer",minHeight:44}}>{o.l}</button>
         ))}
       </div>
+      <input placeholder="🔍 Filter by customer name…" value={custFilter} onChange={e=>setCustFilter(e.target.value)} style={{...IS,marginBottom:10}}/>
       <div style={{display:"flex",gap:8,marginBottom:10}}>
-        <button onClick={()=>exportCSV([["Date","Bill No","Customer","Product","Qty(m)","Rate","Amount"],...filteredSales.map(s=>[fmtD(s.date),s.billNo||"",s.customerName,s.productName,s.meters,s.rate,s.amount])],`SalesRegister_${salesView}_${today()}.csv`)} style={{background:C.green,color:"#fff",border:"none",borderRadius:9,padding:"9px 15px",fontSize:12.5,fontWeight:700,cursor:"pointer",minHeight:40}}>📥 CSV</button>
+        <button onClick={()=>exportCSV([["Date","Bill No","Customer","Product","Qty(m)","Rate","Amount"],...salesRows.map(s=>[fmtD(s.date),s.billNo||"",s.customerName,s.productName,s.meters,s.rate,s.amount])],`SalesRegister_${salesView}_${today()}.csv`)} style={{background:C.green,color:"#fff",border:"none",borderRadius:9,padding:"9px 15px",fontSize:12.5,fontWeight:700,cursor:"pointer",minHeight:40}}>📥 CSV</button>
         <button onClick={doPDFSales} style={{background:C.red,color:"#fff",border:"none",borderRadius:9,padding:"9px 15px",fontSize:12.5,fontWeight:700,cursor:"pointer",minHeight:40}}>🖨️ PDF</button>
       </div>
       <div style={{background:C.card,borderRadius:12,padding:14,marginBottom:12,borderLeft:`4px solid ${C.blue}`}}>
-        <Mute>Total Sales {fy!==ALL_FY?`— FY ${fy}`:""} ({filteredSales.length} bills)</Mute>
+        <Mute>Total Sales {fy!==ALL_FY?`— FY ${fy}`:""}{custFilter?` — ${custFilter}`:""} ({salesRows.length} bills)</Mute>
         <div style={{fontSize:22,fontWeight:900,color:C.blue}}>₹{fmt(totSales)}</div>
       </div>
 
-      {/* Date-wise — 6 column table: Customer, Bill Date, Bill No, Qty, Rate, Amount */}
+      {/* Date-wise — 7 column table: Customer, Bill Date, Bill No, Product, Qty, Rate, Amount */}
       {salesView==="date"&&(()=>{
-        const rows=[...filteredSales].sort((a,b)=>new Date(b.date)-new Date(a.date));
+        const rows=[...salesRows].sort((a,b)=>new Date(b.date)-new Date(a.date));
         if(rows.length===0)return <Empty text="No sales found."/>;
         const th={padding:"9px 10px",textAlign:"left",fontSize:10.5,color:C.gold,background:C.navy,whiteSpace:"nowrap",position:"sticky",top:0};
         const td={padding:"8px 10px",fontSize:12,color:C.navy,whiteSpace:"nowrap",borderBottom:`1px solid ${C.border}`};
         return(
           <div style={{background:C.card,borderRadius:12,boxShadow:"0 1px 8px rgba(0,0,0,0.06)",overflowX:"auto",marginBottom:10}}>
-            <table style={{borderCollapse:"collapse",width:"100%",minWidth:640}}>
+            <table style={{borderCollapse:"collapse",width:"100%",minWidth:760}}>
               <thead><tr>
                 <th style={{...th,borderRadius:"12px 0 0 0"}}>Customer</th>
                 <th style={th}>Bill Date</th>
                 <th style={th}>Bill No</th>
+                <th style={th}>Product</th>
                 <th style={{...th,textAlign:"right"}}>Qty (m)</th>
                 <th style={{...th,textAlign:"right"}}>Rate</th>
                 <th style={{...th,textAlign:"right",borderRadius:"0 12px 0 0"}}>Amount</th>
@@ -1229,6 +1419,7 @@ function ReportsTab({data,tradingOut,tots,generatePDF}){
                     <td style={{...td,fontWeight:700}}>{s.customerName}</td>
                     <td style={td}>{fmtD(s.date)}</td>
                     <td style={td}>{s.billNo||"—"}</td>
+                    <td style={td}>{s.productName||"—"}</td>
                     <td style={{...td,textAlign:"right"}}>{fmt(s.meters)}</td>
                     <td style={{...td,textAlign:"right"}}>₹{fmt(s.rate)}</td>
                     <td style={{...td,textAlign:"right",fontWeight:900,color:C.blue}}>₹{fmt(s.amount)}</td>
@@ -1243,7 +1434,8 @@ function ReportsTab({data,tradingOut,tots,generatePDF}){
       {/* Customer-wise */}
       {salesView==="customer"&&(()=>{
         const custMap={};
-        filteredSales.forEach(s=>{if(!custMap[s.customerName])custMap[s.customerName]={name:s.customerName,sales:[],total:0};custMap[s.customerName].sales.push(s);custMap[s.customerName].total+=+s.amount||0;});
+        salesRows.forEach(s=>{if(!custMap[s.customerName])custMap[s.customerName]={name:s.customerName,sales:[],total:0};custMap[s.customerName].sales.push(s);custMap[s.customerName].total+=+s.amount||0;});
+        if(Object.keys(custMap).length===0)return <Empty text="No sales found."/>;
         return Object.values(custMap).sort((a,b)=>b.total-a.total).map(c=>(
           <div key={c.name} style={{background:C.card,borderRadius:13,marginBottom:12,overflow:"hidden",boxShadow:"0 1px 8px rgba(0,0,0,0.07)"}}>
             <div style={{background:`linear-gradient(90deg,${C.navyMid},${C.navy})`,padding:"11px 14px",display:"flex",justifyContent:"space-between"}}>
@@ -1266,7 +1458,8 @@ function ReportsTab({data,tradingOut,tots,generatePDF}){
       {/* Product-wise */}
       {salesView==="product"&&(()=>{
         const prodMap={};
-        filteredSales.forEach(s=>{const p=s.productName||"Unknown";if(!prodMap[p])prodMap[p]={name:p,sales:[],total:0,meters:0};prodMap[p].sales.push(s);prodMap[p].total+=+s.amount||0;prodMap[p].meters+=+s.meters||0;});
+        salesRows.forEach(s=>{const p=s.productName||"Unknown";if(!prodMap[p])prodMap[p]={name:p,sales:[],total:0,meters:0};prodMap[p].sales.push(s);prodMap[p].total+=+s.amount||0;prodMap[p].meters+=+s.meters||0;});
+        if(Object.keys(prodMap).length===0)return <Empty text="No sales found."/>;
         return Object.values(prodMap).sort((a,b)=>b.total-a.total).map(p=>(
           <div key={p.name} style={{background:C.card,borderRadius:13,marginBottom:12,overflow:"hidden",boxShadow:"0 1px 8px rgba(0,0,0,0.07)"}}>
             <div style={{background:`linear-gradient(90deg,${C.teal},#117A65)`,padding:"11px 14px",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
