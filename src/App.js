@@ -12,7 +12,22 @@ const fmtD  = d => d?new Date(d).toLocaleDateString("en-IN"):"—";
 const today = () => new Date().toISOString().split("T")[0];
 const uid   = () => Date.now()+"-"+Math.random().toString(36).slice(2,6);
 function excelDateToJS(v){if(v instanceof Date)return v;if(typeof v==="number")return new Date(Math.round((v-25569)*86400*1000));if(typeof v==="string"){const d=new Date(v);if(!isNaN(d))return d;}return null;}
-function exportBackup(data){const b=new Blob([JSON.stringify(data,null,2)],{type:"application/json"});const a=document.createElement("a");a.href=URL.createObjectURL(b);a.download=`FabricSales_${today()}.json`;a.click();}
+function exportBackup(data){const b=new Blob([JSON.stringify(data,null,2)],{type:"application/json"});const a=document.createElement("a");a.href=URL.createObjectURL(b);a.download=`FabricSales_${today()}.json`;a.click();try{localStorage.setItem(SK+"-lastbackup",new Date().toISOString());}catch(e){}}
+function getLastBackup(){try{return localStorage.getItem(SK+"-lastbackup");}catch(e){return null;}}
+async function shareBackupNative(data){
+  const filename=`FabricSales_${today()}.json`;
+  try{
+    const file=new File([JSON.stringify(data,null,2)],filename,{type:"application/json"});
+    if(navigator.canShare&&navigator.canShare({files:[file]})){
+      await navigator.share({files:[file],title:"Amihem Sales Backup",text:`Amihem Sales backup — ${today()}`});
+      try{localStorage.setItem(SK+"-lastbackup",new Date().toISOString());}catch(e){}
+      return "shared";
+    }
+  }catch(e){
+    if(e && e.name==="AbortError")return "cancelled";
+  }
+  return "unsupported";
+}
 function exportCSV(rows,fn){const csv=rows.map(r=>r.map(c=>`"${String(c||"").replace(/"/g,'""')}"`).join(",")).join("\n");const b=new Blob(["\uFEFF"+csv],{type:"text/csv"});const a=document.createElement("a");a.href=URL.createObjectURL(b);a.download=fn;a.click();}
 
 // ── Financial Year helpers ────────────────────────────────────────
@@ -86,15 +101,24 @@ export default function App(){
   const[data,setData]=useState(null);
   const[modal,setModal]=useState(null);
   const[toast,setToast]=useState(null);
+  const[lastBackupAt,setLastBackupAt]=useState(null);
   const restoreRef=useRef(null);const importRef=useRef(null);
 
-  useEffect(()=>{loadData().then(setData);},[]);
+  useEffect(()=>{loadData().then(setData);setLastBackupAt(getLastBackup());},[]);
   useEffect(()=>{if(data)saveData(data);},[data]);
 
   const showToast=(msg,err)=>{setToast({msg,err});setTimeout(()=>setToast(null),3000);};
   const add=(section,rec)=>{setData(p=>({...p,[section]:[...p[section],{...rec,id:uid()}]}));showToast("Saved successfully.");setModal(null);};
   const del=(section,id)=>{if(!window.confirm("Are you sure you want to delete this record? This action cannot be undone."))return;setData(p=>({...p,[section]:p[section].filter(r=>r.id!==id)}));showToast("Deleted.");};
   const updateMaster=(section,updated)=>{setData(p=>({...p,[section]:p[section].map(r=>r.id===updated.id?updated:r)}));showToast("Updated.");setModal(null);};
+
+  const handleBackupClick=()=>{exportBackup(data);setLastBackupAt(getLastBackup());showToast("Backup downloaded.");};
+  const handleShareBackup=async()=>{
+    const result=await shareBackupNative(data);
+    if(result==="shared"){setLastBackupAt(getLastBackup());showToast("Backup shared successfully.");}
+    else if(result==="cancelled"){/* user cancelled the share sheet — do nothing */}
+    else{exportBackup(data);setLastBackupAt(getLastBackup());showToast("Direct share isn't supported here — file downloaded, attach it manually in WhatsApp/Email.");}
+  };
 
   const handleExcelImport=(e)=>{
     const file=e.target.files[0];if(!file)return;
@@ -119,7 +143,26 @@ export default function App(){
     reader.readAsArrayBuffer(file);
   };
 
-  const importBackup=(e)=>{const f=e.target.files[0];if(!f)return;const r=new FileReader();r.onload=ev=>{try{setData({...EMPTY,...JSON.parse(ev.target.result)});showToast("Backup restored.");}catch{showToast("Invalid backup.",true);}e.target.value="";};r.onerror=()=>{showToast("Could not read file.",true);e.target.value="";};r.readAsText(f);};
+  const importBackup=(e)=>{
+    const f=e.target.files[0];if(!f)return;
+    const r=new FileReader();
+    r.onload=ev=>{
+      let parsed;
+      try{parsed=JSON.parse(ev.target.result);}catch{showToast("Invalid backup file.",true);e.target.value="";return;}
+      const custCount=Array.isArray(parsed.customers)?parsed.customers.length:0;
+      const saleCount=Array.isArray(parsed.tradingSales)?parsed.tradingSales.length:0;
+      const ok=window.confirm(
+        `⚠️ Restore Backup?\n\nThis will REPLACE all current data (${data?data.customers.length:0} customers, ${data?data.tradingSales.length:0} sales) with the backup file (${custCount} customers, ${saleCount} sales).\n\nThis cannot be undone. A safety copy of your CURRENT data will be downloaded first — tap OK to continue, or Cancel to stop.`
+      );
+      if(!ok){e.target.value="";return;}
+      if(data)exportBackup(data); // safety copy of current data before overwrite
+      setData({...EMPTY,...parsed});
+      showToast("Backup restored. Your previous data was saved as a safety download.");
+      e.target.value="";
+    };
+    r.onerror=()=>{showToast("Could not read file.",true);e.target.value="";};
+    r.readAsText(f);
+  };
 
   if(!data)return(<div style={{display:"flex",alignItems:"center",justifyContent:"center",minHeight:"100vh",background:C.navy,flexDirection:"column",gap:12}}><div style={{fontSize:48}}>🧵</div><div style={{color:C.gold,fontWeight:800,fontSize:16}}>Loading…</div></div>);
 
@@ -151,7 +194,8 @@ export default function App(){
       {TABS.map(t=>(<button key={t.id} onClick={()=>setTab(t.id)} style={{background:tab===t.id?"rgba(232,201,126,0.12)":"transparent",border:"none",borderLeft:tab===t.id?`3px solid ${C.gold}`:"3px solid transparent",padding:"12px 20px",textAlign:"left",color:tab===t.id?C.gold:"rgba(255,255,255,0.65)",fontSize:13.5,fontWeight:tab===t.id?700:400,cursor:"pointer",display:"flex",alignItems:"center",gap:10}}><span>{t.icon}</span>{t.label}{t.id==="Outstanding"&&overdueCount>0&&<span style={{background:C.red,color:"#fff",borderRadius:20,fontSize:10,fontWeight:800,padding:"2px 7px",marginLeft:"auto"}}>{overdueCount}</span>}</button>))}
       <div style={{marginTop:"auto",padding:"16px 20px",borderTop:"1px solid rgba(255,255,255,0.08)",display:"flex",flexDirection:"column",gap:8}}>
         <button onClick={()=>importRef.current&&importRef.current.click()} style={{...hdrBtn(),flexDirection:"row",gap:8,width:"100%",justifyContent:"flex-start",padding:"10px 12px"}}>📊 <span style={{fontSize:12}}>Import Excel</span></button>
-        <button onClick={()=>exportBackup(data)} style={{...hdrBtn(),flexDirection:"row",gap:8,width:"100%",justifyContent:"flex-start",padding:"10px 12px"}}>☁️ <span style={{fontSize:12}}>Backup</span></button>
+        <button onClick={handleBackupClick} style={{...hdrBtn(),flexDirection:"row",gap:8,width:"100%",justifyContent:"flex-start",padding:"10px 12px"}}>☁️ <span style={{fontSize:12}}>Backup</span></button>
+        <button onClick={handleShareBackup} style={{...hdrBtn(),flexDirection:"row",gap:8,width:"100%",justifyContent:"flex-start",padding:"10px 12px"}}>📤 <span style={{fontSize:12}}>Share (WhatsApp/Email)</span></button>
         <button onClick={()=>restoreRef.current&&restoreRef.current.click()} style={{...hdrBtn(),flexDirection:"row",gap:8,width:"100%",justifyContent:"flex-start",padding:"10px 12px"}}>📂 <span style={{fontSize:12}}>Restore</span></button>
       </div>
     </div>
@@ -165,7 +209,8 @@ export default function App(){
         <div><div style={{fontSize:9,letterSpacing:2,color:C.gold,textTransform:"uppercase",fontWeight:700}}>Amihem</div><div style={{fontSize:18,fontWeight:900,color:"#fff"}}>Sales</div></div>
         <div style={{display:"flex",gap:6}}>
           <button onClick={()=>importRef.current&&importRef.current.click()} style={hdrBtn()}><span style={{fontSize:18}}>📊</span><span style={{fontSize:9}}>Excel</span></button>
-          <button onClick={()=>exportBackup(data)} style={hdrBtn()}><span style={{fontSize:18}}>☁️</span><span style={{fontSize:9}}>Backup</span></button>
+          <button onClick={handleBackupClick} style={hdrBtn()}><span style={{fontSize:18}}>☁️</span><span style={{fontSize:9}}>Backup</span></button>
+          <button onClick={handleShareBackup} style={hdrBtn()}><span style={{fontSize:18}}>📤</span><span style={{fontSize:9}}>Share</span></button>
           <button onClick={()=>restoreRef.current&&restoreRef.current.click()} style={hdrBtn()}><span style={{fontSize:18}}>📂</span><span style={{fontSize:9}}>Restore</span></button>
         </div>
       </div>
@@ -173,7 +218,7 @@ export default function App(){
         {TABS.map(t=>(<button key={t.id} onClick={()=>setTab(t.id)} style={{flex:"0 0 auto",padding:"12px 14px",fontSize:12,fontWeight:tab===t.id?800:500,color:tab===t.id?C.gold:"rgba(255,255,255,0.6)",background:"none",border:"none",borderBottom:tab===t.id?`3px solid ${C.gold}`:"3px solid transparent",cursor:"pointer",whiteSpace:"nowrap",minHeight:44,position:"relative"}}>{t.icon} {t.label}{t.id==="Outstanding"&&overdueCount>0&&<span style={{position:"absolute",top:6,right:4,background:C.red,color:"#fff",borderRadius:10,fontSize:9,fontWeight:800,padding:"1px 5px"}}>{overdueCount}</span>}</button>))}
       </div>
       <div className="main" style={{marginLeft:0,padding:"18px 16px 40px",maxWidth:860}}>
-        {tab==="Dashboard"  &&<DashboardTab data={data} tots={{totTradingSale,totTradingPaid,totTradingOut,totComm}} onNav={setTab} tradingOut={tradingOut}/>}
+        {tab==="Dashboard"  &&<DashboardTab data={data} tots={{totTradingSale,totTradingPaid,totTradingOut,totComm}} onNav={setTab} tradingOut={tradingOut} lastBackupAt={lastBackupAt} onShareBackup={handleShareBackup}/>}
         {tab==="Trading"    &&<TradingTab data={data} onAdd={()=>setModal({type:"sale"})} onAddPay={()=>setModal({type:"payment"})} onAddDebit={()=>setModal({type:"debit"})} onAddCredit={()=>setModal({type:"credit"})} onDel={del} onEdit={(type,rec)=>setModal({type:`edit-${type}`,rec})} tradingOut={tradingOut}/>}
         {tab==="Outstanding"&&<OutstandingTab tradingOut={tradingOut} data={data} onAddPay={(pre)=>setModal({type:"payment",preCustomer:pre})} generatePDF={generatePDF}/>}
         {tab==="Aging"      &&<AgingTab data={data} generatePDF={generatePDF}/>}
@@ -205,11 +250,21 @@ export default function App(){
 }
 
 // ─── DASHBOARD ───────────────────────────────────────────────────
-function DashboardTab({data,tots,onNav,tradingOut}){
+function DashboardTab({data,tots,onNav,tradingOut,lastBackupAt,onShareBackup}){
   const{totTradingSale,totTradingPaid,totTradingOut,totComm}=tots;
   const recent=[...data.tradingSales].sort((a,b)=>new Date(b.date)-new Date(a.date)).slice(0,8);
   const outList=Object.values(tradingOut).filter(v=>Math.max(0,v.due+(v.debit||0)-v.paid-(v.credit||0))>0).sort((a,b)=>b.due-b.paid-(a.due-a.paid)).slice(0,5);
+  const daysSinceBackup=lastBackupAt?Math.floor((Date.now()-new Date(lastBackupAt).getTime())/86400000):null;
+  const backupOverdue=daysSinceBackup===null||daysSinceBackup>=7;
   return(<div>
+    {backupOverdue&&<div style={{background:"#FEF6E7",border:"1px solid #F5D397",borderRadius:14,padding:"13px 15px",marginBottom:16,display:"flex",alignItems:"center",gap:10,flexWrap:"wrap"}}>
+      <span style={{fontSize:20}}>⚠️</span>
+      <div style={{flex:1,minWidth:160}}>
+        <div style={{fontWeight:800,fontSize:12.5,color:"#7D5A00"}}>{daysSinceBackup===null?"No backup taken yet":`Last backup: ${daysSinceBackup} day${daysSinceBackup===1?"":"s"} ago`}</div>
+        <div style={{fontSize:11,color:"#8A6D1F",marginTop:1}}>Share a backup copy to WhatsApp or Email to keep your data safe.</div>
+      </div>
+      <button onClick={onShareBackup} style={{background:"#7D5A00",color:"#fff",border:"none",borderRadius:9,padding:"9px 14px",fontSize:12,fontWeight:700,cursor:"pointer",flexShrink:0}}>📤 Share Now</button>
+    </div>}
     <div style={{background:`linear-gradient(135deg,${C.navy},${C.navyMid})`,borderRadius:16,padding:"18px 20px",marginBottom:16,border:"1px solid rgba(232,201,126,0.25)"}}>
       <div style={{fontSize:10.5,color:C.gold,letterSpacing:2,textTransform:"uppercase",fontWeight:700}}>Commission Earned (on Payments)</div>
       <div style={{fontSize:34,fontWeight:900,color:C.gold,marginTop:6}}>₹{fmt(totComm)}</div>
@@ -333,6 +388,7 @@ function OutstandingTab({tradingOut,data,onAddPay,generatePDF}){
   const entries=Object.values(tradingOut).map(v=>{
     const net=Math.max(0,v.due+(v.debit||0)-v.paid-(v.credit||0));
     const custSales=data.tradingSales.filter(s=>s.customerName===v.name).sort((a,b)=>new Date(a.date)-new Date(b.date));
+    const custDebits=(data.debitNotes||[]).filter(n=>n.customerName===v.name);
     // Credit notes reduce outstanding same as payment — include in FIFO pool
     let rem=v.paid+(v.credit||0);let maxDays=0;let oldestBill=null;let oldestDate=null;
     const openBills=[];
@@ -344,6 +400,13 @@ function OutstandingTab({tradingOut,data,onAddPay,generatePDF}){
         if(days>maxDays){maxDays=days;oldestBill=s.billNo;oldestDate=s.date;}
         openBills.push({billNo:s.billNo||"—",date:s.date,outstanding:left,days,billAmount:amt,productName:s.productName||"",meters:+s.meters||0,rate:+s.rate||0});
       }
+    });
+    // Debit notes always add to outstanding (not offset by the paid/credit pool) — age from their own date, matches Ageing tab
+    custDebits.forEach(n=>{
+      const amt=+n.amount||0;if(amt<=0)return;
+      const days=Math.floor((todayMs-new Date(n.date).setHours(0,0,0,0))/86400000);
+      if(days>maxDays){maxDays=days;oldestBill=n.noteNo||"DN";oldestDate=n.date;}
+      openBills.push({billNo:n.noteNo||"DN",date:n.date,outstanding:amt,days,billAmount:amt,productName:"Debit Note",meters:0,rate:0,isDebitNote:true});
     });
     return{...v,net,maxDays,oldestBill,oldestDate,openBills};
   }).filter(v=>v.net>0).filter(v=>!search||v.name.toLowerCase().includes(search.toLowerCase())).sort((a,b)=>b.net-a.net);
@@ -397,15 +460,19 @@ function OutstandingTab({tradingOut,data,onAddPay,generatePDF}){
         </div>
         {isOpen&&<div style={{marginTop:12,paddingTop:10,borderTop:`1px solid ${C.border}`}}>
           <div style={{fontWeight:700,fontSize:12.5,color:C.navy,marginBottom:8}}>Bill-wise Outstanding</div>
-          {v.openBills.map((b,i)=>{const bb=ageBucket(b.days);const credit=Math.max(0,(b.billAmount||b.outstanding)-b.outstanding);return(<div key={i} style={{background:"#F7F9FC",borderRadius:10,padding:"12px 13px",marginBottom:8,borderLeft:`3px solid ${bb.color}`}}>
+          {v.openBills.map((b,i)=>{const bb=ageBucket(b.days);const credit=Math.max(0,(b.billAmount||b.outstanding)-b.outstanding);return(<div key={i} style={{background:b.isDebitNote?"#FDEDEC":"#F7F9FC",borderRadius:10,padding:"12px 13px",marginBottom:8,borderLeft:`3px solid ${b.isDebitNote?C.red:bb.color}`}}>
             <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start"}}>
               <div style={{flex:1}}>
-                <div style={{fontSize:13,fontWeight:800,color:C.navy}}>Bill No. : {b.billNo}</div>
-                <div style={{fontSize:11.5,color:C.muted,marginTop:3}}>Bill Date : {fmtD(b.date)}</div>
-                {b.productName&&<div style={{fontSize:11.5,color:C.teal,marginTop:2}}>📦 {b.productName}</div>}
-                {b.meters>0&&<div style={{fontSize:11.5,color:C.muted}}>Qty : {fmt(b.meters)} m {b.rate>0?`@ ₹${fmt(b.rate)}/m`:""}</div>}
-                <div style={{fontSize:11.5,color:C.muted,marginTop:2}}>Bill Amt : <b style={{color:C.blue}}>₹{fmt(b.billAmount||b.outstanding)}</b></div>
-                {credit>0&&<div style={{fontSize:11.5,color:C.muted}}>Credit : <b style={{color:C.green}}>₹{fmt(credit)}</b></div>}
+                <div style={{fontSize:13,fontWeight:800,color:C.navy}}>{b.isDebitNote?"Debit Note No. : ":"Bill No. : "}{b.billNo}</div>
+                <div style={{fontSize:11.5,color:C.muted,marginTop:3}}>{b.isDebitNote?"Note Date : ":"Bill Date : "}{fmtD(b.date)}</div>
+                {b.isDebitNote?
+                  <div style={{fontSize:11,fontWeight:700,color:"#C0392B",marginTop:3}}>⚠️ Debit Note — increases outstanding</div>
+                :<>
+                  {b.productName&&<div style={{fontSize:11.5,color:C.teal,marginTop:2}}>📦 {b.productName}</div>}
+                  {b.meters>0&&<div style={{fontSize:11.5,color:C.muted}}>Qty : {fmt(b.meters)} m {b.rate>0?`@ ₹${fmt(b.rate)}/m`:""}</div>}
+                  <div style={{fontSize:11.5,color:C.muted,marginTop:2}}>Bill Amt : <b style={{color:C.blue}}>₹{fmt(b.billAmount||b.outstanding)}</b></div>
+                  {credit>0&&<div style={{fontSize:11.5,color:C.muted}}>Credit : <b style={{color:C.green}}>₹{fmt(credit)}</b></div>}
+                </>}
                 <div style={{fontSize:11.5,color:bb.color,fontWeight:700,marginTop:3}}>⏱ {b.days} Days · {bb.label}</div>
               </div>
               <div style={{textAlign:"right",minWidth:90}}>
@@ -1322,10 +1389,10 @@ function ReportsTab({data,tradingOut,tots,generatePDF}){
       const rows=[...salesRows].sort((a,b)=>new Date(b.date)-new Date(a.date)).map(s=>`<tr><td>${s.customerName}</td><td>${fmtD(s.date)}</td><td>${s.billNo||"—"}</td><td>${s.productName||"—"}</td><td style="text-align:right">${fmt(s.meters)} m</td><td style="text-align:right">₹${fmt(s.rate)}</td><td style="text-align:right;font-weight:bold">₹${fmt(s.amount)}</td></tr>`).join("");
       generatePDF(`Sales Register — Date-wise${fy!==ALL_FY?" (FY "+fy+")":""}${custFilter?" — "+custFilter:""}`,`${pdfStyle}<table><thead><tr><th>Customer</th><th>Bill Date</th><th>Bill No</th><th>Product</th><th style="text-align:right">Qty (m)</th><th style="text-align:right">Rate</th><th style="text-align:right">Amount</th></tr></thead><tbody>${rows}<tr class="tot"><td colspan="6">TOTAL</td><td style="text-align:right">₹${fmt(total)}</td></tr></tbody></table>`);
     } else if(salesView==="customer"){
-      const custMap={};salesRows.forEach(s=>{if(!custMap[s.customerName])custMap[s.customerName]={name:s.customerName,sales:[],total:0};custMap[s.customerName].sales.push(s);custMap[s.customerName].total+=+s.amount||0;});
+      const custMap={};salesRows.forEach(s=>{if(!custMap[s.customerName])custMap[s.customerName]={name:s.customerName,sales:[],total:0,qty:0};custMap[s.customerName].sales.push(s);custMap[s.customerName].total+=+s.amount||0;custMap[s.customerName].qty+=+s.meters||0;});
       const blocks=Object.values(custMap).sort((a,b)=>b.total-a.total).map(c=>{
         const rows=c.sales.sort((a,b)=>new Date(a.date)-new Date(b.date)).map(s=>`<tr><td>${fmtD(s.date)}</td><td>${s.billNo||"—"}</td><td>${s.productName||"—"}</td><td style="text-align:right">${fmt(s.meters)} m</td><td style="text-align:right">₹${fmt(s.rate)}</td><td style="text-align:right;font-weight:bold">₹${fmt(s.amount)}</td></tr>`).join("");
-        return `<tr class="grp-hdr"><td colspan="5"><b>${c.name}</b></td><td style="text-align:right;font-weight:bold">₹${fmt(c.total)}</td></tr>${rows}`;
+        return `<tr class="grp-hdr"><td colspan="5"><b>${c.name}</b> — ${fmt(c.qty)} m</td><td style="text-align:right;font-weight:bold">₹${fmt(c.total)}</td></tr>${rows}`;
       }).join("");
       generatePDF(`Sales Register — Customer-wise${fy!==ALL_FY?" (FY "+fy+")":""}`,`${pdfStyle}<table><thead><tr><th>Date</th><th>Bill No</th><th>Product</th><th style="text-align:right">Qty (m)</th><th style="text-align:right">Rate</th><th style="text-align:right">Amount</th></tr></thead><tbody>${blocks}<tr class="tot"><td colspan="5">TOTAL</td><td style="text-align:right">₹${fmt(total)}</td></tr></tbody></table>`);
     } else {
@@ -1371,6 +1438,7 @@ function ReportsTab({data,tradingOut,tots,generatePDF}){
   };
 
   const totSales=salesRows.reduce((a,s)=>a+(+s.amount||0),0);
+  const totQty=salesRows.reduce((a,s)=>a+(+s.meters||0),0);
 
   return(<div>
     <div style={{display:"flex",overflowX:"auto",gap:8,marginBottom:12,scrollbarWidth:"none"}}>
@@ -1392,7 +1460,10 @@ function ReportsTab({data,tradingOut,tots,generatePDF}){
       </div>
       <div style={{background:C.card,borderRadius:12,padding:14,marginBottom:12,borderLeft:`4px solid ${C.blue}`}}>
         <Mute>Total Sales {fy!==ALL_FY?`— FY ${fy}`:""}{custFilter?` — ${custFilter}`:""} ({salesRows.length} bills)</Mute>
-        <div style={{fontSize:22,fontWeight:900,color:C.blue}}>₹{fmt(totSales)}</div>
+        <div style={{display:"flex",alignItems:"baseline",gap:14,flexWrap:"wrap"}}>
+          <div style={{fontSize:22,fontWeight:900,color:C.blue}}>₹{fmt(totSales)}</div>
+          <div style={{fontSize:13,fontWeight:700,color:C.teal}}>{fmt(totQty)} m <span style={{fontSize:10.5,color:C.muted,fontWeight:600}}>total qty</span></div>
+        </div>
       </div>
 
       {/* Date-wise — 7 column table: Customer, Bill Date, Bill No, Product, Qty, Rate, Amount */}
@@ -1434,13 +1505,16 @@ function ReportsTab({data,tradingOut,tots,generatePDF}){
       {/* Customer-wise */}
       {salesView==="customer"&&(()=>{
         const custMap={};
-        salesRows.forEach(s=>{if(!custMap[s.customerName])custMap[s.customerName]={name:s.customerName,sales:[],total:0};custMap[s.customerName].sales.push(s);custMap[s.customerName].total+=+s.amount||0;});
+        salesRows.forEach(s=>{if(!custMap[s.customerName])custMap[s.customerName]={name:s.customerName,sales:[],total:0,qty:0};custMap[s.customerName].sales.push(s);custMap[s.customerName].total+=+s.amount||0;custMap[s.customerName].qty+=+s.meters||0;});
         if(Object.keys(custMap).length===0)return <Empty text="No sales found."/>;
         return Object.values(custMap).sort((a,b)=>b.total-a.total).map(c=>(
           <div key={c.name} style={{background:C.card,borderRadius:13,marginBottom:12,overflow:"hidden",boxShadow:"0 1px 8px rgba(0,0,0,0.07)"}}>
-            <div style={{background:`linear-gradient(90deg,${C.navyMid},${C.navy})`,padding:"11px 14px",display:"flex",justifyContent:"space-between"}}>
-              <B style={{color:"#fff",fontSize:13}}>{c.name}</B>
-              <span style={{fontWeight:900,color:C.gold}}>₹{fmt(c.total)}</span>
+            <div style={{background:`linear-gradient(90deg,${C.navyMid},${C.navy})`,padding:"11px 14px"}}>
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+                <B style={{color:"#fff",fontSize:13}}>{c.name}</B>
+                <span style={{fontWeight:900,color:C.gold}}>₹{fmt(c.total)}</span>
+              </div>
+              <div style={{fontSize:11,color:"rgba(255,255,255,0.65)",marginTop:2}}>{fmt(c.qty)} m total qty · {c.sales.length} bills</div>
             </div>
             {c.sales.sort((a,b)=>new Date(b.date)-new Date(a.date)).map((s,i)=>(
               <div key={s.id} style={{padding:"9px 14px",borderBottom:`1px solid ${C.border}`,background:i%2===0?"#fff":"#FAFBFC",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
