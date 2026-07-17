@@ -3,7 +3,7 @@ import * as XLSX from "xlsx";
 import { BarChart, Bar, LineChart, Line, AreaChart, Area, ComposedChart, PieChart, Pie, Cell, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from "recharts";
 
 const SK = "fabric-sales-v3-trading";
-const EMPTY = { customers:[], suppliers:[], products:[], tradingSales:[], tradingPayments:[], debitNotes:[], creditNotes:[], enquiries:[] };
+const EMPTY = { customers:[], suppliers:[], products:[], tradingSales:[], tradingPayments:[], debitNotes:[], creditNotes:[], enquiries:[], trash:[] };
 async function loadData(){try{const r=localStorage.getItem(SK);if(r)return{...EMPTY,...JSON.parse(r)};}catch(e){}return{...EMPTY};}
 async function saveData(d){try{localStorage.setItem(SK,JSON.stringify(d));}catch(e){}}
 
@@ -11,6 +11,71 @@ const fmt   = n => Number(n||0).toLocaleString("en-IN",{maximumFractionDigits:2}
 const fmtD  = d => d?new Date(d).toLocaleDateString("en-IN"):"—";
 const today = () => new Date().toISOString().split("T")[0];
 const uid   = () => Date.now()+"-"+Math.random().toString(36).slice(2,6);
+const normName = s => String(s||"").trim().toLowerCase().replace(/\s+/g," ");
+function computeCustomerOutstanding(name,data){
+  const due=data.tradingSales.filter(s=>s.customerName===name).reduce((a,s)=>a+(+s.amount||0),0);
+  const paid=data.tradingPayments.filter(p=>p.customerName===name).reduce((a,p)=>a+(+p.amount||0),0);
+  const debit=(data.debitNotes||[]).filter(n=>n.customerName===name).reduce((a,n)=>a+(+n.amount||0),0);
+  const credit=(data.creditNotes||[]).filter(n=>n.customerName===name).reduce((a,n)=>a+(+n.amount||0),0);
+  return Math.max(0,due+debit-paid-credit);
+}
+// Finds an existing customer whose normalized name matches (used to catch duplicates like extra spaces / different casing)
+function findDuplicateCustomer(name,customers,excludeId){
+  const n=normName(name);if(!n)return null;
+  return (customers||[]).find(c=>c.id!==excludeId&&normName(c.name)===n)||null;
+}
+// Warns (via confirm) only when the typed name is a near-duplicate of an existing customer (same normalized form, different exact text).
+// Returns true if it's safe to proceed with saving.
+function warnIfNearDuplicateCustomer(name,customers){
+  const match=findDuplicateCustomer(name,customers,null);
+  if(match&&match.name!==name){
+    return window.confirm(`⚠️ A customer named "${match.name}" already exists.\n\nYou typed "${name}" — this looks like it could be the same customer with a typo/spacing difference, which would split their ledger into two.\n\nTap OK to save anyway with "${name}", or Cancel to fix it.`);
+  }
+  return true;
+}
+function findDuplicateBillNo(billNo,sales,excludeId){
+  const b=String(billNo||"").trim().toLowerCase();if(!b)return null;
+  return (sales||[]).find(s=>s.id!==excludeId&&String(s.billNo||"").trim().toLowerCase()===b)||null;
+}
+// Warns when a Bill No already exists elsewhere in the Sales register (possible duplicate/double entry). Returns true if safe to proceed.
+function warnIfDuplicateBillNo(billNo,sales,excludeId){
+  const match=findDuplicateBillNo(billNo,sales,excludeId);
+  if(match){
+    return window.confirm(`⚠️ Bill No "${billNo}" already exists — ${match.customerName}, ₹${fmt(match.amount)}, ${fmtD(match.date)}.\n\nThis may be a duplicate entry. Tap OK to save anyway, or Cancel to review.`);
+  }
+  return true;
+}
+function findDuplicateNoteNo(noteNo,notes,excludeId){
+  const n=String(noteNo||"").trim().toLowerCase();if(!n)return null;
+  return (notes||[]).find(x=>x.id!==excludeId&&String(x.noteNo||"").trim().toLowerCase()===n)||null;
+}
+function warnIfDuplicateNoteNo(noteNo,notes,excludeId,label){
+  const match=findDuplicateNoteNo(noteNo,notes,excludeId);
+  if(match){
+    return window.confirm(`⚠️ ${label} No "${noteNo}" already exists — ${match.customerName}, ₹${fmt(match.amount)}, ${fmtD(match.date)}.\n\nThis may be a duplicate entry. Tap OK to save anyway, or Cancel to review.`);
+  }
+  return true;
+}
+const TRASH_SECTION_LABELS={customers:"Customer",suppliers:"Supplier",products:"Product",tradingSales:"Sale",tradingPayments:"Payment",debitNotes:"Debit Note",creditNotes:"Credit Note",enquiries:"Enquiry"};
+function describeTrashEntry(entry){
+  const r=entry.record;const type=TRASH_SECTION_LABELS[entry.section]||entry.section;
+  let title="—",sub="";
+  if(entry.section==="customers"||entry.section==="suppliers"){title=r.name;sub=[r.phone,r.city].filter(Boolean).join(" · ");}
+  else if(entry.section==="products"){title=r.name;sub=[r.supplierName,r.unit].filter(Boolean).join(" · ");}
+  else if(entry.section==="tradingSales"){title=r.customerName;sub=`${r.productName||""} · ₹${fmt(r.amount)} · ${fmtD(r.date)}`;}
+  else if(entry.section==="tradingPayments"){title=r.customerName;sub=`₹${fmt(r.amount)} · ${r.mode||""} · ${fmtD(r.date)}`;}
+  else if(entry.section==="debitNotes"||entry.section==="creditNotes"){title=r.customerName;sub=`₹${fmt(r.amount)} · ${fmtD(r.date)}`;}
+  else if(entry.section==="enquiries"){title=r.customerName;sub=(r.description||"").slice(0,60);}
+  return{type,title,sub};
+}
+function timeAgo(iso){
+  if(!iso)return"";
+  const mins=Math.floor((Date.now()-new Date(iso).getTime())/60000);
+  if(mins<1)return"just now";
+  if(mins<60)return`${mins}m ago`;
+  const hrs=Math.floor(mins/60);if(hrs<24)return`${hrs}h ago`;
+  const days=Math.floor(hrs/24);return`${days}d ago`;
+}
 function excelDateToJS(v){if(v instanceof Date)return v;if(typeof v==="number")return new Date(Math.round((v-25569)*86400*1000));if(typeof v==="string"){const d=new Date(v);if(!isNaN(d))return d;}return null;}
 function exportBackup(data){const b=new Blob([JSON.stringify(data,null,2)],{type:"application/json"});const a=document.createElement("a");a.href=URL.createObjectURL(b);a.download=`FabricSales_${today()}.json`;a.click();try{localStorage.setItem(SK+"-lastbackup",new Date().toISOString());}catch(e){}}
 function getLastBackup(){try{return localStorage.getItem(SK+"-lastbackup");}catch(e){return null;}}
@@ -60,6 +125,61 @@ function generatePDF(title,content){
   win.document.close();
 }
 
+// Groups every sale row sharing the same Bill No + Customer into one invoice's line items (falls back to the single row if Bill No is blank)
+function getInvoiceLineItems(sale,allSales){
+  if(!sale.billNo||!sale.billNo.trim())return[sale];
+  const b=sale.billNo.trim().toLowerCase();
+  const matched=allSales.filter(s=>s.customerName===sale.customerName&&(s.billNo||"").trim().toLowerCase()===b);
+  return matched.length?matched:[sale];
+}
+function generateInvoice(sale,allSales,customer){
+  const items=getInvoiceLineItems(sale,allSales);
+  const total=items.reduce((a,s)=>a+(+s.amount||0),0);
+  const totalQty=items.reduce((a,s)=>a+(+s.meters||0),0);
+  const rows=items.map((s,i)=>`<tr><td>${i+1}</td><td>${s.productName||"—"}</td><td style="text-align:right">${fmt(s.meters)}</td><td style="text-align:right">₹${fmt(s.rate)}</td><td style="text-align:right">₹${fmt(s.amount)}</td></tr>`).join("");
+  const win=window.open("","_blank");
+  win.document.write(`<!DOCTYPE html><html><head><title>Invoice ${sale.billNo||sale.id}</title><style>
+    body{font-family:Arial,sans-serif;font-size:13px;color:#111;padding:30px;max-width:800px;margin:auto;}
+    .hdr{display:flex;justify-content:space-between;align-items:flex-start;border-bottom:3px solid #0F1923;padding-bottom:16px;margin-bottom:20px;}
+    .co{font-size:24px;font-weight:900;color:#0F1923;}
+    .tag{font-size:11px;color:#666;margin-top:2px;}
+    .inv-title{font-size:20px;font-weight:800;color:#0F1923;text-align:right;}
+    .inv-meta{font-size:12px;color:#555;text-align:right;margin-top:4px;line-height:1.6;}
+    .parties{display:flex;justify-content:space-between;margin-bottom:24px;gap:20px;}
+    .party-box{flex:1;}
+    .party-label{font-size:10px;color:#888;text-transform:uppercase;letter-spacing:1px;font-weight:700;margin-bottom:4px;}
+    .party-name{font-size:15px;font-weight:800;color:#0F1923;}
+    .party-detail{font-size:12px;color:#555;margin-top:2px;}
+    table{width:100%;border-collapse:collapse;margin-top:10px;}
+    th{background:#0F1923;color:#E8C97E;padding:9px 10px;text-align:left;font-size:11.5px;}
+    td{padding:8px 10px;border-bottom:1px solid #eee;font-size:12.5px;}
+    tr:nth-child(even){background:#f9f9f9;}
+    .tot-row td{background:#0F1923;color:#E8C97E;font-weight:bold;border:none;font-size:14px;}
+    .footer{margin-top:40px;display:flex;justify-content:space-between;font-size:11px;color:#888;border-top:1px solid #eee;padding-top:16px;}
+    .sign-line{margin-top:50px;border-top:1px solid #333;padding-top:6px;font-size:11px;text-align:center;}
+  </style></head><body>
+    <div class="hdr">
+      <div><div class="co">Navkar Fabrics</div><div class="tag">Fabric Trading &amp; Indenting</div></div>
+      <div><div class="inv-title">TAX INVOICE</div><div class="inv-meta">Invoice No: ${sale.billNo||"—"}<br/>Date: ${fmtD(sale.date)}</div></div>
+    </div>
+    <div class="parties">
+      <div class="party-box"><div class="party-label">Bill To</div><div class="party-name">${sale.customerName}</div>
+        ${customer&&customer.phone?`<div class="party-detail">📞 ${customer.phone}</div>`:""}
+        ${customer&&customer.city?`<div class="party-detail">📍 ${customer.city}</div>`:""}
+        ${customer&&customer.gstin?`<div class="party-detail">GSTIN: ${customer.gstin}</div>`:""}
+      </div>
+    </div>
+    <table><thead><tr><th>#</th><th>Product</th><th style="text-align:right">Qty (m)</th><th style="text-align:right">Rate</th><th style="text-align:right">Amount</th></tr></thead>
+    <tbody>${rows}<tr class="tot-row"><td colspan="2">TOTAL</td><td style="text-align:right">${fmt(totalQty)} m</td><td></td><td style="text-align:right">₹${fmt(total)}</td></tr></tbody></table>
+    <div class="footer">
+      <div>Thank you for your business.</div>
+      <div class="sign-line">Authorized Signatory</div>
+    </div>
+    <script>window.onload=()=>{window.print();}<\/script>
+  </body></html>`);
+  win.document.close();
+}
+
 function parseExcelData(rows){
   let hi=-1;
   for(let i=0;i<Math.min(5,rows.length);i++){const r=rows[i];if(r&&r.some(c=>String(c||"").toLowerCase().includes("customer")||String(c||"").toLowerCase().includes("product"))){hi=i;break;}}
@@ -88,6 +208,7 @@ const TABS=[
   {id:"Dashboard",icon:"📊",label:"Dashboard"},
   {id:"Trading",icon:"🏪",label:"Entry"},
   {id:"Outstanding",icon:"⏳",label:"Outstanding"},
+  {id:"Ledger",icon:"📖",label:"Ledger"},
   {id:"Aging",icon:"📅",label:"Ageing"},
   {id:"Analytics",icon:"📈",label:"Analytics"},
   {id:"Commission",icon:"💰",label:"Commission"},
@@ -102,14 +223,46 @@ export default function App(){
   const[modal,setModal]=useState(null);
   const[toast,setToast]=useState(null);
   const[lastBackupAt,setLastBackupAt]=useState(null);
+  const[searchOpen,setSearchOpen]=useState(false);
+  const[navHint,setNavHint]=useState(null);
   const restoreRef=useRef(null);const importRef=useRef(null);
+  const navigateTab=(tabId,hint=null)=>{setNavHint(hint);setTab(tabId);};
 
   useEffect(()=>{loadData().then(setData);setLastBackupAt(getLastBackup());},[]);
   useEffect(()=>{if(data)saveData(data);},[data]);
 
-  const showToast=(msg,err)=>{setToast({msg,err});setTimeout(()=>setToast(null),3000);};
+  const showToast=(msg,err,action)=>{setToast({msg,err,action});setTimeout(()=>setToast(null),action?7000:3000);};
   const add=(section,rec)=>{setData(p=>({...p,[section]:[...p[section],{...rec,id:uid()}]}));showToast("Saved successfully.");setModal(null);};
-  const del=(section,id)=>{if(!window.confirm("Are you sure you want to delete this record? This action cannot be undone."))return;setData(p=>({...p,[section]:p[section].filter(r=>r.id!==id)}));showToast("Deleted.");};
+  const del=(section,id)=>{
+    if(!window.confirm("Are you sure you want to delete this record? It will be moved to Trash and can be restored later from Masters → Trash."))return;
+    const record=data[section].find(r=>r.id===id);
+    if(!record)return;
+    const trashId=uid();
+    setData(p=>({
+      ...p,
+      [section]:p[section].filter(r=>r.id!==id),
+      trash:[{trashId,section,record,deletedAt:new Date().toISOString()},...(p.trash||[])].slice(0,20)
+    }));
+    showToast("Deleted.",false,{label:"Undo",onClick:()=>restoreTrash(trashId)});
+  };
+  const restoreTrash=(trashId)=>{
+    setData(p=>{
+      const entry=(p.trash||[]).find(t=>t.trashId===trashId);
+      if(!entry)return p;
+      return{...p,[entry.section]:[...p[entry.section],entry.record],trash:p.trash.filter(t=>t.trashId!==trashId)};
+    });
+    showToast("Restored.");
+  };
+  const permanentDeleteTrash=(trashId)=>{
+    if(!window.confirm("Permanently delete this record? This cannot be undone."))return;
+    setData(p=>({...p,trash:(p.trash||[]).filter(t=>t.trashId!==trashId)}));
+    showToast("Permanently deleted.");
+  };
+  const emptyTrash=()=>{
+    if(!window.confirm("Empty the trash? All recoverable records will be permanently deleted."))return;
+    setData(p=>({...p,trash:[]}));
+    showToast("Trash emptied.");
+  };
   const updateMaster=(section,updated)=>{setData(p=>({...p,[section]:p[section].map(r=>r.id===updated.id?updated:r)}));showToast("Updated.");setModal(null);};
 
   const handleBackupClick=()=>{exportBackup(data);setLastBackupAt(getLastBackup());showToast("Backup downloaded.");};
@@ -120,6 +273,9 @@ export default function App(){
     else{exportBackup(data);setLastBackupAt(getLastBackup());showToast("Direct share isn't supported here — file downloaded, attach it manually in WhatsApp/Email.");}
   };
 
+  const[excelPreview,setExcelPreview]=useState(null);
+  const[backupPreview,setBackupPreview]=useState(null);
+
   const handleExcelImport=(e)=>{
     const file=e.target.files[0];if(!file)return;
     const reader=new FileReader();
@@ -129,18 +285,32 @@ export default function App(){
         const ws=wb.Sheets[wb.SheetNames[0]];
         const rows=XLSX.utils.sheet_to_json(ws,{header:1,raw:true,defval:null});
         const parsed=parseExcelData(rows);
-        if(!parsed||parsed.tradingSales.length===0){showToast("Could not parse Excel.",true);return;}
-        setData(p=>{
-          const ec=new Set(p.customers.map(c=>c.name.toLowerCase()));
-          const es=new Set(p.suppliers.map(s=>s.name.toLowerCase()));
-          const ep=new Set(p.products.map(x=>x.name.toLowerCase()));
-          return{...p,customers:[...p.customers,...parsed.customers.filter(c=>!ec.has(c.name.toLowerCase()))],suppliers:[...p.suppliers,...parsed.suppliers.filter(s=>!es.has(s.name.toLowerCase()))],products:[...p.products,...parsed.products.filter(x=>!ep.has(x.name.toLowerCase()))],tradingSales:[...p.tradingSales,...parsed.tradingSales],tradingPayments:[...p.tradingPayments,...parsed.tradingPayments]};
+        if(!parsed||parsed.tradingSales.length===0){showToast("Could not parse Excel.",true);e.target.value="";return;}
+        const ec=new Set(data.customers.map(c=>c.name.toLowerCase()));
+        const es=new Set(data.suppliers.map(s=>s.name.toLowerCase()));
+        const ep=new Set(data.products.map(x=>x.name.toLowerCase()));
+        setExcelPreview({
+          fileName:file.name,parsed,
+          newCustomers:parsed.customers.filter(c=>!ec.has(c.name.toLowerCase())).length,
+          newSuppliers:parsed.suppliers.filter(s=>!es.has(s.name.toLowerCase())).length,
+          newProducts:parsed.products.filter(x=>!ep.has(x.name.toLowerCase())).length,
         });
-        showToast(`Imported ${parsed.tradingSales.length} sales, ${parsed.customers.length} customers.`);
       }catch{showToast("Error reading file.",true);}
       e.target.value="";
     };
     reader.readAsArrayBuffer(file);
+  };
+  const confirmExcelImport=()=>{
+    if(!excelPreview)return;
+    const parsed=excelPreview.parsed;
+    setData(p=>{
+      const ec=new Set(p.customers.map(c=>c.name.toLowerCase()));
+      const es=new Set(p.suppliers.map(s=>s.name.toLowerCase()));
+      const ep=new Set(p.products.map(x=>x.name.toLowerCase()));
+      return{...p,customers:[...p.customers,...parsed.customers.filter(c=>!ec.has(c.name.toLowerCase()))],suppliers:[...p.suppliers,...parsed.suppliers.filter(s=>!es.has(s.name.toLowerCase()))],products:[...p.products,...parsed.products.filter(x=>!ep.has(x.name.toLowerCase()))],tradingSales:[...p.tradingSales,...parsed.tradingSales],tradingPayments:[...p.tradingPayments,...parsed.tradingPayments]};
+    });
+    showToast(`Imported ${parsed.tradingSales.length} sales, ${excelPreview.newCustomers} new customers.`);
+    setExcelPreview(null);
   };
 
   const importBackup=(e)=>{
@@ -149,19 +319,30 @@ export default function App(){
     r.onload=ev=>{
       let parsed;
       try{parsed=JSON.parse(ev.target.result);}catch{showToast("Invalid backup file.",true);e.target.value="";return;}
-      const custCount=Array.isArray(parsed.customers)?parsed.customers.length:0;
-      const saleCount=Array.isArray(parsed.tradingSales)?parsed.tradingSales.length:0;
-      const ok=window.confirm(
-        `⚠️ Restore Backup?\n\nThis will REPLACE all current data (${data?data.customers.length:0} customers, ${data?data.tradingSales.length:0} sales) with the backup file (${custCount} customers, ${saleCount} sales).\n\nThis cannot be undone. A safety copy of your CURRENT data will be downloaded first — tap OK to continue, or Cancel to stop.`
-      );
-      if(!ok){e.target.value="";return;}
-      if(data)exportBackup(data); // safety copy of current data before overwrite
-      setData({...EMPTY,...parsed});
-      showToast("Backup restored. Your previous data was saved as a safety download.");
+      setBackupPreview({fileName:f.name,parsed});
       e.target.value="";
     };
     r.onerror=()=>{showToast("Could not read file.",true);e.target.value="";};
     r.readAsText(f);
+  };
+  const confirmRestoreBackup=()=>{
+    if(!backupPreview)return;
+    if(data)exportBackup(data); // safety copy of current data before overwrite
+    setData({...EMPTY,...backupPreview.parsed});
+    showToast("Backup restored. Your previous data was saved as a safety download.");
+    setBackupPreview(null);
+  };
+
+  const handleSearchSelect=(r)=>{
+    setSearchOpen(false);
+    if(r.kind==="customer")navigateTab("Ledger",{customer:r.name});
+    else if(r.kind==="sale")navigateTab("Trading",{view:"sales",search:r.customerName});
+    else if(r.kind==="payment")navigateTab("Trading",{view:"payments",search:r.customerName});
+    else if(r.kind==="debit")navigateTab("Trading",{view:"debit",search:r.customerName});
+    else if(r.kind==="credit")navigateTab("Trading",{view:"credit",search:r.customerName});
+    else if(r.kind==="product")navigateTab("Masters",{view:"products",search:r.name});
+    else if(r.kind==="supplier")navigateTab("Masters",{view:"suppliers",search:r.name});
+    else if(r.kind==="enquiry")navigateTab("Enquiry",null);
   };
 
   if(!data)return(<div style={{display:"flex",alignItems:"center",justifyContent:"center",minHeight:"100vh",background:C.navy,flexDirection:"column",gap:12}}><div style={{fontSize:48}}>🧵</div><div style={{color:C.gold,fontWeight:800,fontSize:16}}>Loading…</div></div>);
@@ -191,7 +372,10 @@ export default function App(){
   const Sidebar=()=>(
     <div style={{width:220,background:C.navy,minHeight:"100vh",position:"fixed",left:0,top:0,zIndex:150,display:"flex",flexDirection:"column",padding:"20px 0"}}>
       <div style={{padding:"0 20px 24px"}}><div style={{fontSize:10,letterSpacing:2.5,color:C.gold,textTransform:"uppercase",fontWeight:700}}>Amihem</div><div style={{fontSize:20,fontWeight:900,color:"#fff",marginTop:4}}>Sales</div></div>
-      {TABS.map(t=>(<button key={t.id} onClick={()=>setTab(t.id)} style={{background:tab===t.id?"rgba(232,201,126,0.12)":"transparent",border:"none",borderLeft:tab===t.id?`3px solid ${C.gold}`:"3px solid transparent",padding:"12px 20px",textAlign:"left",color:tab===t.id?C.gold:"rgba(255,255,255,0.65)",fontSize:13.5,fontWeight:tab===t.id?700:400,cursor:"pointer",display:"flex",alignItems:"center",gap:10}}><span>{t.icon}</span>{t.label}{t.id==="Outstanding"&&overdueCount>0&&<span style={{background:C.red,color:"#fff",borderRadius:20,fontSize:10,fontWeight:800,padding:"2px 7px",marginLeft:"auto"}}>{overdueCount}</span>}</button>))}
+      <div style={{padding:"0 20px 14px"}}>
+        <button onClick={()=>setSearchOpen(true)} style={{width:"100%",background:"rgba(255,255,255,0.08)",border:"1px solid rgba(255,255,255,0.15)",borderRadius:10,padding:"9px 12px",color:"rgba(255,255,255,0.6)",fontSize:12.5,textAlign:"left",cursor:"pointer",display:"flex",alignItems:"center",gap:8}}>🔍 Search everything…</button>
+      </div>
+      {TABS.map(t=>(<button key={t.id} onClick={()=>navigateTab(t.id)} style={{background:tab===t.id?"rgba(232,201,126,0.12)":"transparent",border:"none",borderLeft:tab===t.id?`3px solid ${C.gold}`:"3px solid transparent",padding:"12px 20px",textAlign:"left",color:tab===t.id?C.gold:"rgba(255,255,255,0.65)",fontSize:13.5,fontWeight:tab===t.id?700:400,cursor:"pointer",display:"flex",alignItems:"center",gap:10}}><span>{t.icon}</span>{t.label}{t.id==="Outstanding"&&overdueCount>0&&<span style={{background:C.red,color:"#fff",borderRadius:20,fontSize:10,fontWeight:800,padding:"2px 7px",marginLeft:"auto"}}>{overdueCount}</span>}</button>))}
       <div style={{marginTop:"auto",padding:"16px 20px",borderTop:"1px solid rgba(255,255,255,0.08)",display:"flex",flexDirection:"column",gap:8}}>
         <button onClick={()=>importRef.current&&importRef.current.click()} style={{...hdrBtn(),flexDirection:"row",gap:8,width:"100%",justifyContent:"flex-start",padding:"10px 12px"}}>📊 <span style={{fontSize:12}}>Import Excel</span></button>
         <button onClick={handleBackupClick} style={{...hdrBtn(),flexDirection:"row",gap:8,width:"100%",justifyContent:"flex-start",padding:"10px 12px"}}>☁️ <span style={{fontSize:12}}>Backup</span></button>
@@ -214,18 +398,22 @@ export default function App(){
           <button onClick={()=>restoreRef.current&&restoreRef.current.click()} style={hdrBtn()}><span style={{fontSize:18}}>📂</span><span style={{fontSize:9}}>Restore</span></button>
         </div>
       </div>
+      <div className="mob" style={{display:"none",background:C.navy,padding:"0 16px 10px"}}>
+        <button onClick={()=>setSearchOpen(true)} style={{width:"100%",background:"rgba(255,255,255,0.1)",border:"1px solid rgba(255,255,255,0.18)",borderRadius:10,padding:"10px 12px",color:"rgba(255,255,255,0.65)",fontSize:13,textAlign:"left",cursor:"pointer"}}>🔍 Search everything…</button>
+      </div>
       <div className="mob" style={{display:"none",background:C.navyMid,overflowX:"auto",WebkitOverflowScrolling:"touch",scrollbarWidth:"none",position:"sticky",top:72,zIndex:99}}>
-        {TABS.map(t=>(<button key={t.id} onClick={()=>setTab(t.id)} style={{flex:"0 0 auto",padding:"12px 14px",fontSize:12,fontWeight:tab===t.id?800:500,color:tab===t.id?C.gold:"rgba(255,255,255,0.6)",background:"none",border:"none",borderBottom:tab===t.id?`3px solid ${C.gold}`:"3px solid transparent",cursor:"pointer",whiteSpace:"nowrap",minHeight:44,position:"relative"}}>{t.icon} {t.label}{t.id==="Outstanding"&&overdueCount>0&&<span style={{position:"absolute",top:6,right:4,background:C.red,color:"#fff",borderRadius:10,fontSize:9,fontWeight:800,padding:"1px 5px"}}>{overdueCount}</span>}</button>))}
+        {TABS.map(t=>(<button key={t.id} onClick={()=>navigateTab(t.id)} style={{flex:"0 0 auto",padding:"12px 14px",fontSize:12,fontWeight:tab===t.id?800:500,color:tab===t.id?C.gold:"rgba(255,255,255,0.6)",background:"none",border:"none",borderBottom:tab===t.id?`3px solid ${C.gold}`:"3px solid transparent",cursor:"pointer",whiteSpace:"nowrap",minHeight:44,position:"relative"}}>{t.icon} {t.label}{t.id==="Outstanding"&&overdueCount>0&&<span style={{position:"absolute",top:6,right:4,background:C.red,color:"#fff",borderRadius:10,fontSize:9,fontWeight:800,padding:"1px 5px"}}>{overdueCount}</span>}</button>))}
       </div>
       <div className="main" style={{marginLeft:0,padding:"18px 16px 40px",maxWidth:860}}>
-        {tab==="Dashboard"  &&<DashboardTab data={data} tots={{totTradingSale,totTradingPaid,totTradingOut,totComm}} onNav={setTab} tradingOut={tradingOut} lastBackupAt={lastBackupAt} onShareBackup={handleShareBackup}/>}
-        {tab==="Trading"    &&<TradingTab data={data} onAdd={()=>setModal({type:"sale"})} onAddPay={()=>setModal({type:"payment"})} onAddDebit={()=>setModal({type:"debit"})} onAddCredit={()=>setModal({type:"credit"})} onDel={del} onEdit={(type,rec)=>setModal({type:`edit-${type}`,rec})} tradingOut={tradingOut}/>}
+        {tab==="Dashboard"  &&<DashboardTab data={data} tots={{totTradingSale,totTradingPaid,totTradingOut,totComm}} onNav={id=>navigateTab(id)} tradingOut={tradingOut} lastBackupAt={lastBackupAt} onShareBackup={handleShareBackup}/>}
+        {tab==="Trading"    &&<TradingTab data={data} onAdd={()=>setModal({type:"sale"})} onAddPay={()=>setModal({type:"payment"})} onAddDebit={()=>setModal({type:"debit"})} onAddCredit={()=>setModal({type:"credit"})} onDel={del} onEdit={(type,rec)=>setModal({type:`edit-${type}`,rec})} tradingOut={tradingOut} initialSearch={navHint?.search} initialView={navHint?.view}/>}
         {tab==="Outstanding"&&<OutstandingTab tradingOut={tradingOut} data={data} onAddPay={(pre)=>setModal({type:"payment",preCustomer:pre})} generatePDF={generatePDF}/>}
+        {tab==="Ledger"     &&<LedgerTab data={data} generatePDF={generatePDF} initialCustomer={navHint?.customer}/>}
         {tab==="Aging"      &&<AgingTab data={data} generatePDF={generatePDF}/>}
         {tab==="Analytics"  &&<AnalyticsTab data={data} tradingOut={tradingOut}/>}
         {tab==="Commission" &&<CommissionTab data={data} generatePDF={generatePDF}/>}
-        {tab==="Enquiry"    &&<EnquiryTab data={data} onAdd={r=>add("enquiries",r)} onUpdate={r=>{setData(p=>({...p,enquiries:p.enquiries.map(e=>e.id===r.id?r:e)}));showToast("Updated.");}} onDel={id=>{if(!window.confirm("Delete this enquiry?"))return;setData(p=>({...p,enquiries:p.enquiries.filter(e=>e.id!==id)}));showToast("Deleted.");}}/>}
-        {tab==="Masters"    &&<MastersTab data={data} onAdd={setModal} onDel={del} onEdit={(type,rec)=>setModal({type:`edit-${type}`,rec})} onImportExcel={()=>importRef.current&&importRef.current.click()}/>}
+        {tab==="Enquiry"    &&<EnquiryTab data={data} onAdd={r=>add("enquiries",r)} onUpdate={r=>{setData(p=>({...p,enquiries:p.enquiries.map(e=>e.id===r.id?r:e)}));showToast("Updated.");}} onDel={id=>del("enquiries",id)}/>}
+        {tab==="Masters"    &&<MastersTab data={data} onAdd={setModal} onDel={del} onEdit={(type,rec)=>setModal({type:`edit-${type}`,rec})} onImportExcel={()=>importRef.current&&importRef.current.click()} trash={data.trash||[]} onRestore={restoreTrash} onPermanentDelete={permanentDeleteTrash} onEmptyTrash={emptyTrash} initialSearch={navHint?.search} initialView={navHint?.view}/>}
         {tab==="Reports"    &&<ReportsTab data={data} tradingOut={tradingOut} tots={{totTradingSale,totTradingPaid,totTradingOut,totComm}} generatePDF={generatePDF}/>}
       </div>
       {modal?.type==="sale"          &&<SaleModal    data={data} onSave={r=>add("tradingSales",r)}    onClose={()=>setModal(null)}/>}
@@ -236,15 +424,21 @@ export default function App(){
       {modal?.type==="edit-payment"  &&<PaymentModal data={data} onSave={r=>updateMaster("tradingPayments",{...modal.rec,...r})} onClose={()=>setModal(null)} initial={modal.rec}/>}
       {modal?.type==="edit-debit"    &&<DebitModal   data={data} onSave={r=>updateMaster("debitNotes",{...modal.rec,...r})}      onClose={()=>setModal(null)} initial={modal.rec}/>}
       {modal?.type==="edit-credit"   &&<CreditModal  data={data} onSave={r=>updateMaster("creditNotes",{...modal.rec,...r})}     onClose={()=>setModal(null)} initial={modal.rec}/>}
-      {modal?.type==="customer"      &&<CustomerModal onSave={r=>add("customers",r)}                  onClose={()=>setModal(null)}/>}
+      {modal?.type==="customer"      &&<CustomerModal onSave={r=>add("customers",r)}                  onClose={()=>setModal(null)} existingCustomers={data.customers}/>}
       {modal?.type==="supplier"      &&<SupplierModal onSave={r=>add("suppliers",r)}                  onClose={()=>setModal(null)}/>}
       {modal?.type==="product"       &&<ProductModal  data={data} onSave={r=>add("products",r)}       onClose={()=>setModal(null)}/>}
-      {modal?.type==="edit-customer" &&<CustomerModal onSave={r=>updateMaster("customers",r)}         onClose={()=>setModal(null)} initial={modal.rec}/>}
+      {modal?.type==="edit-customer" &&<CustomerModal onSave={r=>updateMaster("customers",r)}         onClose={()=>setModal(null)} initial={modal.rec} existingCustomers={data.customers}/>}
       {modal?.type==="edit-supplier" &&<SupplierModal onSave={r=>updateMaster("suppliers",r)}         onClose={()=>setModal(null)} initial={modal.rec}/>}
       {modal?.type==="edit-product"  &&<ProductModal  data={data} onSave={r=>updateMaster("products",r)} onClose={()=>setModal(null)} initial={modal.rec}/>}
       <input ref={importRef} type="file" accept=".xlsx,.xls" onChange={handleExcelImport} style={{display:"none"}}/>
       <input ref={restoreRef} type="file" accept=".json" onChange={importBackup} style={{display:"none"}}/>
-      {toast&&<div style={{position:"fixed",bottom:"calc(env(safe-area-inset-bottom,0px) + 24px)",left:"50%",transform:"translateX(-50%)",background:toast.err?"#B03A2E":C.navy,color:C.gold,padding:"11px 24px",borderRadius:24,fontSize:13.5,fontWeight:700,zIndex:999,boxShadow:"0 4px 20px rgba(0,0,0,0.4)",whiteSpace:"nowrap",border:"1px solid rgba(232,201,126,0.3)",maxWidth:"90%",textAlign:"center"}}>{toast.msg}</div>}
+      {excelPreview&&<ExcelImportPreviewModal preview={excelPreview} onConfirm={confirmExcelImport} onCancel={()=>setExcelPreview(null)}/>}
+      {searchOpen&&<GlobalSearchModal data={data} onClose={()=>setSearchOpen(false)} onSelect={handleSearchSelect}/>}
+      {backupPreview&&<BackupPreviewModal preview={backupPreview} currentData={data} onConfirm={confirmRestoreBackup} onCancel={()=>setBackupPreview(null)}/>}
+      {toast&&<div style={{position:"fixed",bottom:"calc(env(safe-area-inset-bottom,0px) + 24px)",left:"50%",transform:"translateX(-50%)",background:toast.err?"#B03A2E":C.navy,color:C.gold,padding:"11px 16px 11px 24px",borderRadius:24,fontSize:13.5,fontWeight:700,zIndex:999,boxShadow:"0 4px 20px rgba(0,0,0,0.4)",whiteSpace:"nowrap",border:"1px solid rgba(232,201,126,0.3)",maxWidth:"90%",display:"flex",alignItems:"center",gap:12}}>
+        <span>{toast.msg}</span>
+        {toast.action&&<button onClick={()=>{toast.action.onClick();setToast(null);}} style={{background:"rgba(232,201,126,0.18)",color:C.gold,border:"1px solid rgba(232,201,126,0.5)",borderRadius:16,padding:"6px 14px",fontSize:12.5,fontWeight:800,cursor:"pointer",flexShrink:0}}>{toast.action.label}</button>}
+      </div>}
     </div>
   );
 }
@@ -296,8 +490,8 @@ function DashboardTab({data,tots,onNav,tradingOut,lastBackupAt,onShareBackup}){
 }
 
 // ─── ENTRY TAB (Sale, Payment, Debit Note, Credit/Return) ─────────
-function TradingTab({data,onAdd,onAddPay,onAddDebit,onAddCredit,onDel,onEdit}){
-  const[view,setView]=useState("sales");const[search,setSearch]=useState("");
+function TradingTab({data,onAdd,onAddPay,onAddDebit,onAddCredit,onDel,onEdit,initialView,initialSearch}){
+  const[view,setView]=useState(initialView||"sales");const[search,setSearch]=useState(initialSearch||"");
   const q=search.trim().toLowerCase();
   const matchName=(name)=>!q||(name||"").toLowerCase().includes(q);
 
@@ -323,7 +517,8 @@ function TradingTab({data,onAdd,onAddPay,onAddDebit,onAddCredit,onDel,onEdit}){
         {s.billNo&&<Mute>Bill No: {s.billNo}</Mute>}
         <Mute>{s.productName} · {s.supplierName}</Mute>
         <Mute>{fmt(s.meters)} m @ ₹{fmt(s.rate)}/m · {fmtD(s.date)}</Mute>
-        <div style={{display:"flex",gap:8,marginTop:8}}>
+        <div style={{display:"flex",gap:8,marginTop:8,flexWrap:"wrap"}}>
+          <button onClick={()=>generateInvoice(s,data.tradingSales,data.customers.find(c=>c.name===s.customerName))} style={{background:"#FEF6E7",color:"#9A7B1E",border:"none",borderRadius:8,padding:"7px 14px",fontSize:12,fontWeight:700,cursor:"pointer"}}>🧾 Invoice</button>
           <button onClick={()=>onEdit("sale",s)} style={{background:"#EAF4FC",color:C.blue,border:"none",borderRadius:8,padding:"7px 14px",fontSize:12,fontWeight:700,cursor:"pointer"}}>✏️ Edit</button>
           <button onClick={()=>onDel("tradingSales",s.id)} style={{background:"#FEE8E8",color:C.red,border:"none",borderRadius:8,padding:"7px 14px",fontSize:12,fontWeight:700,cursor:"pointer"}}>🗑️ Delete</button>
         </div>
@@ -379,9 +574,10 @@ function TradingTab({data,onAdd,onAddPay,onAddDebit,onAddCredit,onDel,onEdit}){
 function OutstandingTab({tradingOut,data,onAddPay,generatePDF}){
   const[search,setSearch]=useState("");
   const[expanded,setExpanded]=useState(null);
+  const[bulkOpen,setBulkOpen]=useState(false);
   const todayMs=new Date().setHours(0,0,0,0);
-  const phoneMap={};const creditDaysMap={};
-  data.customers.forEach(c=>{phoneMap[c.name]=c.phone;creditDaysMap[c.name]=parseInt(c.creditDays||30);});
+  const phoneMap={};const creditDaysMap={};const creditLimitMap={};
+  data.customers.forEach(c=>{phoneMap[c.name]=c.phone;creditDaysMap[c.name]=parseInt(c.creditDays||30);if(c.creditLimit&&+c.creditLimit>0)creditLimitMap[c.name]=+c.creditLimit;});
 
   const ageBucket=(days)=>{if(days<=30)return{label:"0-30 Days",color:C.green};if(days<=60)return{label:"31-60 Days",color:C.orange};if(days<=90)return{label:"61-90 Days",color:"#E67E22"};if(days<=120)return{label:"91-120 Days",color:C.red};return{label:"Above 120 Days",color:"#922B21"};};
 
@@ -408,10 +604,12 @@ function OutstandingTab({tradingOut,data,onAddPay,generatePDF}){
       if(days>maxDays){maxDays=days;oldestBill=n.noteNo||"DN";oldestDate=n.date;}
       openBills.push({billNo:n.noteNo||"DN",date:n.date,outstanding:amt,days,billAmount:amt,productName:"Debit Note",meters:0,rate:0,isDebitNote:true});
     });
-    return{...v,net,maxDays,oldestBill,oldestDate,openBills};
+    const limit=creditLimitMap[v.name]||0;
+    return{...v,net,maxDays,oldestBill,oldestDate,openBills,creditLimit:limit,overLimit:limit>0&&net>limit};
   }).filter(v=>v.net>0).filter(v=>!search||v.name.toLowerCase().includes(search.toLowerCase())).sort((a,b)=>b.net-a.net);
 
   const total=entries.reduce((a,v)=>a+v.net,0);
+  const overLimitCount=entries.filter(v=>v.overLimit).length;
 
   const buildWA=(v)=>{
     const nums=["1️⃣","2️⃣","3️⃣","4️⃣","5️⃣","6️⃣","7️⃣","8️⃣","9️⃣","🔟"];
@@ -442,14 +640,17 @@ function OutstandingTab({tradingOut,data,onAddPay,generatePDF}){
       <input placeholder="Search customer…" value={search} onChange={e=>setSearch(e.target.value)} style={{...IS,flex:1}}/>
       <button onClick={doPDF} style={{background:C.red,color:"#fff",border:"none",borderRadius:11,padding:"0 16px",fontSize:13,fontWeight:700,cursor:"pointer",flexShrink:0}}>PDF</button>
     </div>
+    <button onClick={()=>setBulkOpen(true)} disabled={entries.length===0} style={{width:"100%",background:entries.length===0?"#EAF6EF":"#E8FBF0",color:"#1E9E58",border:"1px solid #25D366",borderRadius:11,padding:"11px 14px",fontSize:13,fontWeight:700,cursor:entries.length===0?"default":"pointer",marginBottom:14,opacity:entries.length===0?0.5:1}}>📤 Bulk WhatsApp Reminders ({entries.length} customers)</button>
     <div style={{background:`linear-gradient(135deg,${C.navy},${C.navyMid})`,borderRadius:14,padding:"14px 16px",marginBottom:16}}>
       <div style={{fontSize:10.5,color:C.gold,textTransform:"uppercase",letterSpacing:1,fontWeight:600}}>Total Outstanding ({entries.length} customers)</div>
       <div style={{fontSize:24,fontWeight:900,color:"#fff"}}>₹{fmt(total)}</div>
     </div>
+    {overLimitCount>0&&<div style={{background:"#FDEDEC",border:"1px solid #F5B7B1",borderRadius:12,padding:"11px 14px",marginBottom:14,fontSize:12.5,color:"#922B21",fontWeight:700}}>🚫 {overLimitCount} customer{overLimitCount===1?"":"s"} over their credit limit</div>}
     {entries.length===0&&<Empty text="All payments clear. No outstanding."/>}
     {entries.map(v=>{const bucket=ageBucket(v.maxDays);const phone=phoneMap[v.name]||v.phone||"";const isOpen=expanded===v.name;const creditDays=creditDaysMap[v.name]||30;return(
-      <div key={v.name} style={{background:C.card,borderRadius:14,padding:"14px 15px",marginBottom:12,boxShadow:"0 1px 8px rgba(0,0,0,0.07)",borderLeft:`4px solid ${bucket.color}`}}>
+      <div key={v.name} style={{background:C.card,borderRadius:14,padding:"14px 15px",marginBottom:12,boxShadow:"0 1px 8px rgba(0,0,0,0.07)",borderLeft:`4px solid ${v.overLimit?"#922B21":bucket.color}`}}>
         <Row><div><B style={{fontSize:15}}>{v.name}</B>{phone&&<Mute>{phone}</Mute>}</div><div style={{textAlign:"right"}}><div style={{fontWeight:900,fontSize:18,color:C.red}}>₹{fmt(v.net)}</div><span style={{fontSize:10,color:bucket.color,fontWeight:700}}>{bucket.label}</span></div></Row>
+        {v.overLimit&&<div style={{background:"#FDEDEC",borderRadius:8,padding:"6px 10px",marginTop:8,fontSize:11,fontWeight:700,color:"#922B21"}}>🚫 Over credit limit — ₹{fmt(v.creditLimit)} limit, over by ₹{fmt(v.net-v.creditLimit)}</div>}
         <div style={{display:"flex",gap:14,marginTop:8,fontSize:12,color:C.muted,flexWrap:"wrap"}}>
           <span>Sales: <b style={{color:C.blue}}>₹{fmt(v.due)}</b></span>
           <span>Paid: <b style={{color:C.green}}>₹{fmt(v.paid)}</b></span>
@@ -489,10 +690,217 @@ function OutstandingTab({tradingOut,data,onAddPay,generatePDF}){
         </div>
       </div>
     );})}
+    {bulkOpen&&<BulkReminderModal entries={entries} phoneMap={phoneMap} buildWA={buildWA} onClose={()=>setBulkOpen(false)}/>}
   </div>);
 }
 
-// ─── AGING TAB ───────────────────────────────────────────────────
+// ─── BULK WHATSAPP REMINDERS (guided send queue) ───────────────────
+// Browsers block programmatic multi-window opens, so this walks the user through
+// one WhatsApp share per customer with a tap to advance — as close to "bulk" as a
+// client-only app can safely get without a WhatsApp Business API backend.
+function BulkReminderModal({entries,phoneMap,buildWA,onClose}){
+  const withPhone=entries.map(v=>({...v,phone:phoneMap[v.name]||v.phone||""})).filter(v=>v.phone);
+  const withoutPhone=entries.filter(v=>!(phoneMap[v.name]||v.phone||""));
+  const[selected,setSelected]=useState(()=>new Set(withPhone.map(v=>v.name)));
+  const[queue,setQueue]=useState(null); // null=selection step, else array of names being sent
+  const[idx,setIdx]=useState(0);
+  const[sentCount,setSentCount]=useState(0);
+
+  const toggle=(name)=>setSelected(p=>{const n=new Set(p);n.has(name)?n.delete(name):n.add(name);return n;});
+  const selectAll=()=>setSelected(new Set(withPhone.map(v=>v.name)));
+  const deselectAll=()=>setSelected(new Set());
+
+  const startQueue=()=>{
+    const list=withPhone.filter(v=>selected.has(v.name));
+    if(list.length===0)return;
+    setQueue(list);setIdx(0);setSentCount(0);
+  };
+
+  const current=queue?queue[idx]:null;
+  const openWA=(v)=>{
+    const n="91"+String(v.phone).replace(/\D/g,"").slice(-10);
+    window.open(`https://wa.me/${n}?text=${encodeURIComponent(buildWA(v))}`,"_blank");
+  };
+  const markSentAndNext=()=>{setSentCount(c=>c+1);setIdx(i=>i+1);};
+  const skip=()=>setIdx(i=>i+1);
+
+  const isDone=queue&&idx>=queue.length;
+
+  return(<ModalBase title="📤 Bulk WhatsApp Reminders" onClose={onClose}>
+    {!queue&&<>
+      <div style={{background:"#FEF9E7",borderRadius:10,padding:"10px 13px",marginBottom:14,fontSize:12,color:"#7D6608",border:"1px solid #F9E79F"}}>
+        Phones don't allow apps to auto-send WhatsApp messages to multiple people at once — so this opens WhatsApp for each selected customer one by one. Tap "Send & Next" after each to move on.
+      </div>
+      {withoutPhone.length>0&&<div style={{background:"#FDEDEC",borderRadius:10,padding:"10px 13px",marginBottom:14,fontSize:12,color:"#922B21"}}>⚠️ {withoutPhone.length} customer(s) have no phone number saved and will be skipped: {withoutPhone.map(v=>v.name).join(", ")}</div>}
+      <div style={{display:"flex",gap:8,marginBottom:12}}>
+        <button onClick={selectAll} style={{flex:1,background:"#F0F4F8",color:C.navy,border:"none",borderRadius:9,padding:"9px 12px",fontSize:12,fontWeight:700,cursor:"pointer"}}>Select All</button>
+        <button onClick={deselectAll} style={{flex:1,background:"#F0F4F8",color:C.navy,border:"none",borderRadius:9,padding:"9px 12px",fontSize:12,fontWeight:700,cursor:"pointer"}}>Deselect All</button>
+      </div>
+      <div style={{maxHeight:340,overflowY:"auto",marginBottom:14}}>
+        {withPhone.map(v=>(
+          <label key={v.name} style={{display:"flex",alignItems:"center",gap:10,padding:"10px 12px",background:"#F8FAFC",borderRadius:10,marginBottom:8,cursor:"pointer"}}>
+            <input type="checkbox" checked={selected.has(v.name)} onChange={()=>toggle(v.name)} style={{width:18,height:18,flexShrink:0}}/>
+            <div style={{flex:1,minWidth:0}}>
+              <div style={{fontSize:13,fontWeight:700,color:C.navy}}>{v.name}</div>
+              <div style={{fontSize:11,color:C.muted}}>{v.phone} · {v.maxDays}d overdue</div>
+            </div>
+            <div style={{fontSize:13,fontWeight:900,color:C.red,flexShrink:0}}>₹{fmt(v.net)}</div>
+          </label>
+        ))}
+        {withPhone.length===0&&<Empty text="No customers with saved phone numbers."/>}
+      </div>
+      <SaveBtn color={selected.size===0?C.muted:"#1E9E58"} onClick={startQueue}>💬 Start Sending ({selected.size})</SaveBtn>
+    </>}
+
+    {queue&&!isDone&&<>
+      <div style={{textAlign:"center",fontSize:12,color:C.muted,fontWeight:700,marginBottom:14}}>Sending {idx+1} of {queue.length}</div>
+      <div style={{background:"#F8FAFC",borderRadius:14,padding:"18px",textAlign:"center",marginBottom:16}}>
+        <div style={{fontSize:17,fontWeight:800,color:C.navy}}>{current.name}</div>
+        <div style={{fontSize:12,color:C.muted,marginTop:2}}>{current.phone} · {current.maxDays}d overdue</div>
+        <div style={{fontSize:26,fontWeight:900,color:C.red,marginTop:10}}>₹{fmt(current.net)}</div>
+      </div>
+      <button onClick={()=>openWA(current)} style={{width:"100%",background:"#25D366",color:"#fff",border:"none",borderRadius:12,padding:15,fontSize:14.5,fontWeight:800,cursor:"pointer",marginBottom:10,minHeight:50}}>💬 Open WhatsApp</button>
+      <div style={{display:"flex",gap:8}}>
+        <button onClick={skip} style={{flex:1,background:"#F0F4F8",color:C.navy,border:"none",borderRadius:12,padding:14,fontSize:13.5,fontWeight:700,cursor:"pointer",minHeight:48}}>⏭ Skip</button>
+        <button onClick={markSentAndNext} style={{flex:2,background:C.navy,color:C.gold,border:"none",borderRadius:12,padding:14,fontSize:13.5,fontWeight:800,cursor:"pointer",minHeight:48}}>✓ Sent — Next</button>
+      </div>
+    </>}
+
+    {isDone&&<div style={{textAlign:"center",padding:"20px 10px"}}>
+      <div style={{fontSize:40,marginBottom:10}}>✅</div>
+      <div style={{fontSize:16,fontWeight:800,color:C.navy}}>Done!</div>
+      <div style={{fontSize:13,color:C.muted,marginTop:4}}>Sent to {sentCount} of {queue.length} customers.</div>
+      <SaveBtn color={C.navy} onClick={onClose}>Close</SaveBtn>
+    </div>}
+  </ModalBase>);
+}
+
+// ─── LEDGER TAB (Customer Statement with running balance) ─────────
+function LedgerTab({data,generatePDF,initialCustomer}){
+  const[selectedCustomer,setSelectedCustomer]=useState(initialCustomer||"");
+  const[search,setSearch]=useState("");
+
+  // All known customer names — Masters list plus any name that only appears in transactions
+  const allNames=useMemo(()=>{
+    const set=new Set(data.customers.map(c=>c.name));
+    data.tradingSales.forEach(s=>s.customerName&&set.add(s.customerName));
+    data.tradingPayments.forEach(p=>p.customerName&&set.add(p.customerName));
+    (data.debitNotes||[]).forEach(n=>n.customerName&&set.add(n.customerName));
+    (data.creditNotes||[]).forEach(n=>n.customerName&&set.add(n.customerName));
+    return [...set].sort((a,b)=>a.localeCompare(b));
+  },[data]);
+
+  const q=search.trim().toLowerCase();
+  const filteredNames=q?allNames.filter(n=>n.toLowerCase().includes(q)):allNames;
+
+  const custMaster=data.customers.find(c=>c.name===selectedCustomer);
+
+  const entries=useMemo(()=>{
+    if(!selectedCustomer)return[];
+    const rows=[];
+    data.tradingSales.filter(s=>s.customerName===selectedCustomer).forEach(s=>rows.push({date:s.date,type:"Sale",ref:s.billNo||"—",particulars:s.productName||"",debit:+s.amount||0,credit:0,ord:0}));
+    data.tradingPayments.filter(p=>p.customerName===selectedCustomer).forEach(p=>rows.push({date:p.date,type:"Payment",ref:p.billNo||p.mode||"—",particulars:p.remarks||p.mode||"",debit:0,credit:+p.amount||0,ord:1}));
+    (data.debitNotes||[]).filter(n=>n.customerName===selectedCustomer).forEach(n=>rows.push({date:n.date,type:"Debit Note",ref:n.noteNo||"DN",particulars:n.remarks||"",debit:+n.amount||0,credit:0,ord:2}));
+    (data.creditNotes||[]).filter(n=>n.customerName===selectedCustomer).forEach(n=>rows.push({date:n.date,type:"Credit Note",ref:n.noteNo||"CN",particulars:n.remarks||n.productName||"",debit:0,credit:+n.amount||0,ord:3}));
+    rows.sort((a,b)=>new Date(a.date)-new Date(b.date)||a.ord-b.ord);
+    let bal=0;
+    return rows.map(r=>{bal+=r.debit-r.credit;return{...r,balance:bal};});
+  },[data,selectedCustomer]);
+
+  const totals=useMemo(()=>entries.reduce((a,r)=>{
+    if(r.type==="Sale")a.sales+=r.debit;
+    if(r.type==="Payment")a.paid+=r.credit;
+    if(r.type==="Debit Note")a.debit+=r.debit;
+    if(r.type==="Credit Note")a.credit+=r.credit;
+    return a;
+  },{sales:0,paid:0,debit:0,credit:0}),[entries]);
+
+  const closingBalance=entries.length?entries[entries.length-1].balance:0;
+  const typeColor={Sale:C.blue,Payment:C.green,"Debit Note":C.red,"Credit Note":C.teal};
+
+  const doPDF=()=>{
+    const rows=entries.map(r=>`<tr><td>${fmtD(r.date)}</td><td>${r.type}</td><td>${r.ref}</td><td>${r.particulars||"—"}</td><td style="text-align:right">${r.debit?"₹"+fmt(r.debit):""}</td><td style="text-align:right">${r.credit?"₹"+fmt(r.credit):""}</td><td style="text-align:right;font-weight:bold">₹${fmt(r.balance)}</td></tr>`).join("");
+    generatePDF(`Statement of Account — ${selectedCustomer}`,`<table><thead><tr><th>Date</th><th>Type</th><th>Ref</th><th>Particulars</th><th style="text-align:right">Debit</th><th style="text-align:right">Credit</th><th style="text-align:right">Balance</th></tr></thead><tbody>${rows}<tr class="tot"><td colspan="6">CLOSING BALANCE</td><td style="text-align:right">₹${fmt(closingBalance)}</td></tr></tbody></table>`);
+  };
+
+  const buildWA=()=>{
+    const lines=entries.slice(-10).map(r=>`${fmtD(r.date)} — ${r.type}${r.ref&&r.ref!=="—"?" ("+r.ref+")":""}: ${r.debit?"+₹"+fmt(r.debit):"-₹"+fmt(r.credit)}`).join("\n");
+    return `🏢 *Navkar Fabrics*\n\nDear *${selectedCustomer}*,\n\nStatement of Account (last ${Math.min(10,entries.length)} entries):\n\n${lines}\n\n💰 *Closing Balance: ₹${fmt(closingBalance)}*\n\nRegards\nNavkar Fabrics`;
+  };
+
+  // ── Customer picker screen ──
+  if(!selectedCustomer){
+    return(<div>
+      <SecTitle>Customer Ledger</SecTitle>
+      <input placeholder="🔍 Search customer to view statement…" value={search} onChange={e=>setSearch(e.target.value)} style={{...IS,marginBottom:12}}/>
+      {filteredNames.length===0&&<Empty text="No customers found."/>}
+      {filteredNames.map(name=>{
+        const m=data.customers.find(c=>c.name===name);
+        return(<button key={name} onClick={()=>setSelectedCustomer(name)} style={{display:"block",width:"100%",textAlign:"left",background:C.card,border:"none",borderRadius:13,padding:"14px 15px",marginBottom:9,boxShadow:"0 1px 8px rgba(0,0,0,0.06)",cursor:"pointer"}}>
+          <Row><B style={{fontSize:14}}>{name}</B><span style={{fontSize:16,color:C.muted}}>›</span></Row>
+          {(m?.phone||m?.city)&&<Mute>{[m?.phone,m?.city].filter(Boolean).join(" · ")}</Mute>}
+        </button>);
+      })}
+    </div>);
+  }
+
+  // ── Statement view ──
+  return(<div>
+    <button onClick={()=>{setSelectedCustomer("");setSearch("");}} style={{background:"#F0F4F8",color:C.navy,border:"none",borderRadius:9,padding:"9px 14px",fontSize:12.5,fontWeight:700,cursor:"pointer",marginBottom:12}}>← Change Customer</button>
+
+    <div style={{background:`linear-gradient(135deg,${C.navy},${C.navyMid})`,borderRadius:16,padding:"16px 18px",marginBottom:14,border:"1px solid rgba(232,201,126,0.25)"}}>
+      <div style={{fontSize:10,color:C.gold,letterSpacing:1.5,textTransform:"uppercase",fontWeight:700}}>Statement of Account</div>
+      <div style={{fontSize:18,fontWeight:900,color:"#fff",marginTop:4}}>{selectedCustomer}</div>
+      {(custMaster?.phone||custMaster?.city)&&<div style={{fontSize:11.5,color:"rgba(255,255,255,0.55)",marginTop:2}}>{[custMaster?.phone,custMaster?.city].filter(Boolean).join(" · ")}</div>}
+      <div style={{fontSize:11,color:"rgba(255,255,255,0.45)",marginTop:8}}>Closing Balance</div>
+      <div style={{fontSize:28,fontWeight:900,color:closingBalance>0?C.red:C.gold,marginTop:2}}>₹{fmt(closingBalance)}</div>
+    </div>
+
+    <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:14}}>
+      <div style={{background:"#F8FAFC",borderRadius:10,padding:"10px 12px",borderLeft:`3px solid ${C.blue}`}}><div style={{fontSize:9.5,color:C.muted,fontWeight:600}}>SALES</div><div style={{fontSize:13,fontWeight:900,color:C.blue}}>₹{fmt(totals.sales)}</div></div>
+      <div style={{background:"#F8FAFC",borderRadius:10,padding:"10px 12px",borderLeft:`3px solid ${C.green}`}}><div style={{fontSize:9.5,color:C.muted,fontWeight:600}}>PAID</div><div style={{fontSize:13,fontWeight:900,color:C.green}}>₹{fmt(totals.paid)}</div></div>
+      <div style={{background:"#F8FAFC",borderRadius:10,padding:"10px 12px",borderLeft:`3px solid ${C.red}`}}><div style={{fontSize:9.5,color:C.muted,fontWeight:600}}>DEBIT NOTES</div><div style={{fontSize:13,fontWeight:900,color:C.red}}>₹{fmt(totals.debit)}</div></div>
+      <div style={{background:"#F8FAFC",borderRadius:10,padding:"10px 12px",borderLeft:`3px solid ${C.teal}`}}><div style={{fontSize:9.5,color:C.muted,fontWeight:600}}>CREDIT NOTES</div><div style={{fontSize:13,fontWeight:900,color:C.teal}}>₹{fmt(totals.credit)}</div></div>
+    </div>
+
+    <div style={{display:"flex",gap:8,marginBottom:14}}>
+      <button onClick={()=>exportCSV([["Date","Type","Ref","Particulars","Debit","Credit","Balance"],...entries.map(r=>[fmtD(r.date),r.type,r.ref,r.particulars,r.debit||"",r.credit||"",r.balance])],`Ledger_${selectedCustomer}_${today()}.csv`)} style={{background:C.green,color:"#fff",border:"none",borderRadius:9,padding:"9px 15px",fontSize:12.5,fontWeight:700,cursor:"pointer",minHeight:40}}>📥 CSV</button>
+      <button onClick={doPDF} style={{background:C.red,color:"#fff",border:"none",borderRadius:9,padding:"9px 15px",fontSize:12.5,fontWeight:700,cursor:"pointer",minHeight:40}}>🖨️ PDF</button>
+      <button onClick={()=>{const phone=custMaster?.phone||"";const n=phone?"91"+String(phone).replace(/\D/g,"").slice(-10):"";window.open(`https://wa.me/${n}?text=${encodeURIComponent(buildWA())}`,"_blank");}} style={{background:"#E8FBF0",color:"#25D366",border:"1px solid #25D366",borderRadius:9,padding:"9px 15px",fontSize:12.5,fontWeight:700,cursor:"pointer",minHeight:40,flex:1}}>💬 WhatsApp</button>
+    </div>
+
+    {entries.length===0?<Empty text="No transactions found for this customer."/>:(()=>{
+      const th={padding:"9px 10px",textAlign:"left",fontSize:10.5,color:C.gold,background:C.navy,whiteSpace:"nowrap"};
+      const td={padding:"8px 10px",fontSize:12,color:C.navy,whiteSpace:"nowrap",borderBottom:`1px solid ${C.border}`};
+      return(
+        <div style={{background:C.card,borderRadius:12,boxShadow:"0 1px 8px rgba(0,0,0,0.06)",overflowX:"auto",marginBottom:10}}>
+          <table style={{borderCollapse:"collapse",width:"100%",minWidth:640}}>
+            <thead><tr>
+              <th style={{...th,borderRadius:"12px 0 0 0"}}>Date</th>
+              <th style={th}>Type</th>
+              <th style={th}>Ref</th>
+              <th style={{...th,textAlign:"right"}}>Debit</th>
+              <th style={{...th,textAlign:"right"}}>Credit</th>
+              <th style={{...th,textAlign:"right",borderRadius:"0 12px 0 0"}}>Balance</th>
+            </tr></thead>
+            <tbody>
+              {entries.map((r,i)=>(
+                <tr key={i} style={{background:i%2===0?"#fff":"#FAFBFC"}}>
+                  <td style={td}>{fmtD(r.date)}</td>
+                  <td style={{...td,fontWeight:700,color:typeColor[r.type]}}>{r.type}</td>
+                  <td style={td}>{r.ref}</td>
+                  <td style={{...td,textAlign:"right",color:C.blue,fontWeight:700}}>{r.debit?`₹${fmt(r.debit)}`:"—"}</td>
+                  <td style={{...td,textAlign:"right",color:C.green,fontWeight:700}}>{r.credit?`₹${fmt(r.credit)}`:"—"}</td>
+                  <td style={{...td,textAlign:"right",fontWeight:900,color:r.balance>0?C.red:C.navy}}>₹{fmt(r.balance)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      );
+    })()}
+  </div>);
+}
 function AgingTab({data,generatePDF}){
   const[search,setSearch]=useState("");const[expanded,setExpanded]=useState(null);
   const todayMs=new Date().setHours(0,0,0,0);
@@ -1121,7 +1529,7 @@ function EnquiryTab({data,onAdd,onUpdate,onDel}){
           </div>}
           {isClosed&&<div style={{display:"flex",gap:6}}>
             <button onClick={()=>reopenEnquiry(enq)} style={{background:"#FEF9E7",color:C.orange,border:`1px solid ${C.orange}`,borderRadius:9,padding:"9px 13px",fontSize:12,fontWeight:700,cursor:"pointer",minHeight:40}}>🔄 Reopen</button>
-            <button onClick={()=>{if(!window.confirm("Delete this enquiry?"))return;onDel(enq.id);}} style={{background:"#FEE8E8",color:C.red,border:"none",borderRadius:9,padding:"9px 13px",fontSize:12,fontWeight:700,cursor:"pointer",minHeight:40}}>🗑️ Delete</button>
+            <button onClick={()=>onDel(enq.id)} style={{background:"#FEE8E8",color:C.red,border:"none",borderRadius:9,padding:"9px 13px",fontSize:12,fontWeight:700,cursor:"pointer",minHeight:40}}>🗑️ Delete</button>
           </div>}
           {!isClosed&&<div style={{display:"flex",gap:6,marginTop:6}}>
             <button onClick={()=>{setForm({...enq});setEditId(enq.id);setShowForm(true);window.scrollTo(0,0);}} style={{background:"#EAF4FC",color:C.blue,border:"none",borderRadius:9,padding:"7px 13px",fontSize:12,fontWeight:700,cursor:"pointer"}}>✏️ Edit</button>
@@ -1293,22 +1701,22 @@ function CommissionTab({data,generatePDF}){
 }
 
 // ─── MASTERS TAB ─────────────────────────────────────────────────
-function MastersTab({data,onAdd,onDel,onEdit,onImportExcel}){
-  const[view,setView]=useState("customers");
-  const[search,setSearch]=useState("");
+function MastersTab({data,onAdd,onDel,onEdit,onImportExcel,trash,onRestore,onPermanentDelete,onEmptyTrash,initialView,initialSearch}){
+  const[view,setView]=useState(initialView||"customers");
+  const[search,setSearch]=useState(initialSearch||"");
   const q=search.trim().toLowerCase();
   const customers=data.customers.filter(c=>!q||c.name.toLowerCase().includes(q)||(c.phone||"").includes(q)||(c.city||"").toLowerCase().includes(q));
   const suppliers=data.suppliers.filter(s=>!q||s.name.toLowerCase().includes(q)||(s.city||"").toLowerCase().includes(q));
   const products=data.products.filter(p=>!q||p.name.toLowerCase().includes(q)||(p.supplierName||"").toLowerCase().includes(q));
-  const searchPlaceholder=view==="customers"?"🔍 Search customer name, phone, city…":view==="suppliers"?"🔍 Search supplier name, city…":"🔍 Search product name, supplier…";
+  const searchPlaceholder=view==="customers"?"🔍 Search customer name, phone, city…":view==="suppliers"?"🔍 Search supplier name, city…":view==="products"?"🔍 Search product name, supplier…":"";
   return(<div>
     <div style={{background:`linear-gradient(135deg,${C.navyMid},${C.navy})`,borderRadius:12,padding:"14px 16px",marginBottom:14,border:"1px solid rgba(232,201,126,0.3)"}}>
       <div style={{fontWeight:800,fontSize:14,color:C.gold,marginBottom:6}}>Import from Excel</div>
       <div style={{fontSize:12,color:"rgba(255,255,255,0.6)",marginBottom:10}}>All masters auto-created from your Excel file.</div>
       <button onClick={onImportExcel} style={{background:C.gold,color:C.navy,border:"none",borderRadius:10,padding:"12px 20px",fontSize:14,fontWeight:800,cursor:"pointer",width:"100%",minHeight:46}}>Import Excel File (.xlsx)</button>
     </div>
-    <SegCtrl options={[{v:"customers",l:`Customers (${data.customers.length})`},{v:"suppliers",l:`Suppliers (${data.suppliers.length})`},{v:"products",l:`Products (${data.products.length})`}]} val={view} onChange={setView}/>
-    <input placeholder={searchPlaceholder} value={search} onChange={e=>setSearch(e.target.value)} style={{...IS,margin:"10px 0"}}/>
+    <SegCtrl options={[{v:"customers",l:`Customers (${data.customers.length})`},{v:"suppliers",l:`Suppliers (${data.suppliers.length})`},{v:"products",l:`Products (${data.products.length})`},{v:"trash",l:`🗑️ Trash (${trash.length})`}]} val={view} onChange={setView}/>
+    {view!=="trash"&&<input placeholder={searchPlaceholder} value={search} onChange={e=>setSearch(e.target.value)} style={{...IS,margin:"10px 0"}}/>}
     {view==="customers"&&<>
       <div style={{margin:"2px 0 8px"}}><Btn color={C.navy} onClick={()=>onAdd({type:"customer"})}>+ Add Customer</Btn></div>
       {customers.length===0&&<Empty text={q?"No customers match your search.":"No customers yet. Import Excel to auto-populate."}/>}
@@ -1316,6 +1724,7 @@ function MastersTab({data,onAdd,onDel,onEdit,onImportExcel}){
         <Row><B>{c.name}</B><span style={{fontSize:11,background:"#F0F4F8",padding:"3px 9px",borderRadius:10,color:C.muted,fontWeight:600}}>{c.type}</span></Row>
         {c.phone&&<Mute>{c.phone}</Mute>}{c.city&&<Mute>{c.city}</Mute>}{c.gstin&&<Mute>GST: {c.gstin}</Mute>}
         <Mute>Credit Days: {c.creditDays||"30"} days</Mute>
+        {c.creditLimit&&+c.creditLimit>0&&<Mute>Credit Limit: ₹{fmt(+c.creditLimit)}</Mute>}
         <div style={{display:"flex",gap:8,marginTop:10}}>
           <button onClick={()=>onEdit("customer",c)} style={{background:"#EAF4FC",color:C.blue,border:"none",borderRadius:8,padding:"7px 14px",fontSize:12,fontWeight:700,cursor:"pointer"}}>Edit</button>
           <button onClick={()=>onDel("customers",c.id)} style={{background:"#FEE8E8",color:C.red,border:"none",borderRadius:8,padding:"7px 14px",fontSize:12,fontWeight:700,cursor:"pointer"}}>Delete</button>
@@ -1344,6 +1753,25 @@ function MastersTab({data,onAdd,onDel,onEdit,onImportExcel}){
           <button onClick={()=>onDel("products",p.id)} style={{background:"#FEE8E8",color:C.red,border:"none",borderRadius:8,padding:"7px 14px",fontSize:12,fontWeight:700,cursor:"pointer"}}>Delete</button>
         </div>
       </div>))}
+    </>}
+    {view==="trash"&&<>
+      <div style={{background:"#FEF9E7",borderRadius:10,padding:"10px 13px",margin:"10px 0",fontSize:12,color:"#7D6608",border:"1px solid #F9E79F"}}>
+        🗑️ Deleted records are kept here (last 20) so you can recover them. Restore to bring a record back, or delete forever to remove it permanently.
+      </div>
+      {trash.length>0&&<button onClick={onEmptyTrash} style={{background:"#FEE8E8",color:C.red,border:"none",borderRadius:9,padding:"9px 14px",fontSize:12,fontWeight:700,cursor:"pointer",marginBottom:10}}>🗑️ Empty Trash</button>}
+      {trash.length===0&&<Empty text="Trash is empty."/>}
+      {trash.map(entry=>{
+        const{type,title,sub}=describeTrashEntry(entry);
+        return(<div key={entry.trashId} style={{background:C.card,borderRadius:13,padding:"13px 15px",marginBottom:10,boxShadow:"0 1px 8px rgba(0,0,0,0.06)",borderLeft:`4px solid ${C.muted}`}}>
+          <Row><div><span style={{fontSize:10,background:"#F0F4F8",padding:"3px 9px",borderRadius:10,color:C.muted,fontWeight:700}}>{type}</span></div><span style={{fontSize:11,color:C.muted}}>{timeAgo(entry.deletedAt)}</span></Row>
+          <B style={{marginTop:6,display:"block"}}>{title}</B>
+          {sub&&<Mute>{sub}</Mute>}
+          <div style={{display:"flex",gap:8,marginTop:10}}>
+            <button onClick={()=>onRestore(entry.trashId)} style={{background:"#E8F8F5",color:C.teal,border:"1px solid "+C.teal,borderRadius:8,padding:"7px 14px",fontSize:12,fontWeight:700,cursor:"pointer"}}>♻️ Restore</button>
+            <button onClick={()=>onPermanentDelete(entry.trashId)} style={{background:"#FEE8E8",color:C.red,border:"none",borderRadius:8,padding:"7px 14px",fontSize:12,fontWeight:700,cursor:"pointer"}}>🗑️ Delete Forever</button>
+          </div>
+        </div>);
+      })}
     </>}
   </div>);
 }
@@ -1630,6 +2058,122 @@ function ReportsTab({data,tradingOut,tots,generatePDF}){
   </div>);
 }
 
+// ─── GLOBAL SEARCH ──────────────────────────────────────────────
+const SEARCH_KIND_LABEL={customer:"Customer",sale:"Sale",payment:"Payment",debit:"Debit Note",credit:"Credit Note",product:"Product",supplier:"Supplier",enquiry:"Enquiry"};
+const SEARCH_KIND_COLOR={customer:C.purple,sale:C.blue,payment:C.green,debit:C.red,credit:C.teal,product:C.orange,supplier:"#8E5A2E",enquiry:C.navy};
+function GlobalSearchModal({data,onClose,onSelect}){
+  const[q,setQ]=useState("");
+  const query=q.trim().toLowerCase();
+
+  const results=useMemo(()=>{
+    if(query.length<2)return[];
+    const out=[];
+    data.customers.forEach(c=>{if(c.name.toLowerCase().includes(query))out.push({kind:"customer",icon:"👤",title:c.name,sub:[c.phone,c.city].filter(Boolean).join(" · "),name:c.name});});
+    data.tradingSales.forEach(s=>{if((s.customerName||"").toLowerCase().includes(query)||(s.billNo||"").toLowerCase().includes(query)||(s.productName||"").toLowerCase().includes(query))out.push({kind:"sale",icon:"🏪",title:`${s.customerName} — ₹${fmt(s.amount)}`,sub:`${s.billNo||"—"} · ${s.productName||""} · ${fmtD(s.date)}`,customerName:s.customerName});});
+    data.tradingPayments.forEach(p=>{if((p.customerName||"").toLowerCase().includes(query)||(p.billNo||"").toLowerCase().includes(query))out.push({kind:"payment",icon:"✅",title:`${p.customerName} — ₹${fmt(p.amount)}`,sub:`${p.mode||""} · ${fmtD(p.date)}`,customerName:p.customerName});});
+    (data.debitNotes||[]).forEach(n=>{if((n.customerName||"").toLowerCase().includes(query)||(n.noteNo||"").toLowerCase().includes(query))out.push({kind:"debit",icon:"⚠️",title:`${n.customerName} — ₹${fmt(n.amount)}`,sub:`${n.noteNo||"DN"} · ${fmtD(n.date)}`,customerName:n.customerName});});
+    (data.creditNotes||[]).forEach(n=>{if((n.customerName||"").toLowerCase().includes(query)||(n.noteNo||"").toLowerCase().includes(query))out.push({kind:"credit",icon:"↩️",title:`${n.customerName} — ₹${fmt(n.amount)}`,sub:`${n.noteNo||"CN"} · ${fmtD(n.date)}`,customerName:n.customerName});});
+    data.products.forEach(p=>{if(p.name.toLowerCase().includes(query))out.push({kind:"product",icon:"📦",title:p.name,sub:[p.supplierName,p.unit].filter(Boolean).join(" · "),name:p.name});});
+    data.suppliers.forEach(s=>{if(s.name.toLowerCase().includes(query))out.push({kind:"supplier",icon:"🚚",title:s.name,sub:[s.phone,s.city].filter(Boolean).join(" · "),name:s.name});});
+    (data.enquiries||[]).forEach(e=>{if((e.customerName||"").toLowerCase().includes(query)||(e.description||"").toLowerCase().includes(query))out.push({kind:"enquiry",icon:"📝",title:e.customerName,sub:(e.description||"").slice(0,55),id:e.id});});
+    return out.slice(0,40);
+  },[query,data]);
+
+  return(<div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.6)",zIndex:300,display:"flex",flexDirection:"column",justifyContent:"flex-end"}} onClick={onClose}>
+    <div style={{background:"#fff",width:"100%",maxWidth:600,margin:"0 auto",borderRadius:"20px 20px 0 0",padding:"18px 16px calc(env(safe-area-inset-bottom,0px) + 20px)",maxHeight:"88vh",display:"flex",flexDirection:"column"}} onClick={e=>e.stopPropagation()}>
+      <Row style={{marginBottom:14,flexShrink:0}}>
+        <B style={{fontSize:16.5,color:C.navy}}>🔍 Search Everything</B>
+        <button onClick={onClose} style={{background:"#F0F4F8",border:"none",borderRadius:20,width:38,height:38,fontSize:16,cursor:"pointer",color:"#555",flexShrink:0}}>✕</button>
+      </Row>
+      <input autoFocus value={q} onChange={e=>setQ(e.target.value)} placeholder="Customer, bill no, product, note no…" style={{...IS,flexShrink:0}}/>
+      <div style={{overflowY:"auto",marginTop:12,flex:1}}>
+        {query.length<2&&<div style={{textAlign:"center",color:"#bbb",fontSize:13,padding:"40px 10px"}}>Type at least 2 characters to search across customers, bills, payments, notes, products, suppliers &amp; enquiries.</div>}
+        {query.length>=2&&results.length===0&&<Empty text="No matches found."/>}
+        {results.map((r,i)=>(
+          <button key={i} onClick={()=>onSelect(r)} style={{display:"flex",gap:10,alignItems:"center",width:"100%",textAlign:"left",background:"#F8FAFC",border:"none",borderRadius:11,padding:"11px 13px",marginBottom:8,cursor:"pointer"}}>
+            <span style={{fontSize:18,flexShrink:0}}>{r.icon}</span>
+            <div style={{flex:1,minWidth:0}}>
+              <div style={{fontSize:13,fontWeight:700,color:C.navy,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{r.title}</div>
+              {r.sub&&<div style={{fontSize:11,color:C.muted,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis",marginTop:1}}>{r.sub}</div>}
+            </div>
+            <span style={{fontSize:9,color:SEARCH_KIND_COLOR[r.kind],textTransform:"uppercase",fontWeight:800,flexShrink:0,background:"#fff",padding:"3px 7px",borderRadius:8}}>{SEARCH_KIND_LABEL[r.kind]}</span>
+          </button>
+        ))}
+      </div>
+    </div>
+  </div>);
+}
+
+// ─── IMPORT PREVIEW MODALS ─────────────────────────────────────────
+function PreviewStat({label,val,color}){
+  return(<div style={{background:"#F8FAFC",borderRadius:10,padding:"10px 12px",borderLeft:`3px solid ${color}`}}>
+    <div style={{fontSize:9.5,color:C.muted,fontWeight:600,textTransform:"uppercase"}}>{label}</div>
+    <div style={{fontSize:15,fontWeight:900,color}}>{val}</div>
+  </div>);
+}
+function ExcelImportPreviewModal({preview,onConfirm,onCancel}){
+  const p=preview.parsed;
+  return(<ModalBase title="Preview Excel Import" onClose={onCancel}>
+    <div style={{fontSize:12.5,color:C.muted,marginBottom:14}}>📄 {preview.fileName}</div>
+    <div style={{background:"#FEF9E7",borderRadius:10,padding:"10px 13px",marginBottom:14,fontSize:12,color:"#7D6608",border:"1px solid #F9E79F"}}>
+      Review the counts below before importing. Existing customers/suppliers/products (matched by name) won't be duplicated — only new ones are added. Sales &amp; payments are always added as new records.
+    </div>
+    <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:10}}>
+      <PreviewStat label="Sales rows" val={p.tradingSales.length} color={C.blue}/>
+      <PreviewStat label="Payment rows" val={p.tradingPayments.length} color={C.green}/>
+    </div>
+    <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8,marginBottom:16}}>
+      <PreviewStat label="New Customers" val={`${preview.newCustomers} / ${p.customers.length}`} color={C.purple}/>
+      <PreviewStat label="New Suppliers" val={`${preview.newSuppliers} / ${p.suppliers.length}`} color={C.orange}/>
+      <PreviewStat label="New Products" val={`${preview.newProducts} / ${p.products.length}`} color={C.teal}/>
+    </div>
+    <div style={{display:"flex",gap:8}}>
+      <button onClick={onCancel} style={{flex:1,background:"#F0F4F8",color:C.navy,border:"none",borderRadius:12,padding:15,fontSize:14,fontWeight:700,cursor:"pointer",minHeight:50}}>Cancel</button>
+      <button onClick={onConfirm} style={{flex:2,background:C.blue,color:"#fff",border:"none",borderRadius:12,padding:15,fontSize:14.5,fontWeight:800,cursor:"pointer",minHeight:50}}>✅ Import {p.tradingSales.length} Sales</button>
+    </div>
+  </ModalBase>);
+}
+function BackupPreviewModal({preview,currentData,onConfirm,onCancel}){
+  const b=preview.parsed;
+  const cnt=(arr)=>Array.isArray(arr)?arr.length:0;
+  const rows=[
+    {label:"Customers",cur:cnt(currentData?.customers),bak:cnt(b.customers)},
+    {label:"Suppliers",cur:cnt(currentData?.suppliers),bak:cnt(b.suppliers)},
+    {label:"Products",cur:cnt(currentData?.products),bak:cnt(b.products)},
+    {label:"Sales",cur:cnt(currentData?.tradingSales),bak:cnt(b.tradingSales)},
+    {label:"Payments",cur:cnt(currentData?.tradingPayments),bak:cnt(b.tradingPayments)},
+    {label:"Debit Notes",cur:cnt(currentData?.debitNotes),bak:cnt(b.debitNotes)},
+    {label:"Credit Notes",cur:cnt(currentData?.creditNotes),bak:cnt(b.creditNotes)},
+    {label:"Enquiries",cur:cnt(currentData?.enquiries),bak:cnt(b.enquiries)},
+  ];
+  return(<ModalBase title="Preview Restore Backup" onClose={onCancel}>
+    <div style={{fontSize:12.5,color:C.muted,marginBottom:14}}>📄 {preview.fileName}</div>
+    <div style={{background:"#FDEDEC",borderRadius:10,padding:"10px 13px",marginBottom:14,fontSize:12,color:"#922B21",border:"1px solid #F5B7B1",fontWeight:600}}>
+      ⚠️ This will REPLACE all current data with this backup file. A safety copy of your current data will be downloaded first. This cannot be undone.
+    </div>
+    <div style={{overflowX:"auto",marginBottom:16}}>
+      <table style={{borderCollapse:"collapse",width:"100%",minWidth:340}}>
+        <thead><tr>
+          <th style={{padding:"7px 8px",textAlign:"left",fontSize:10,color:C.gold,background:C.navy,borderRadius:"8px 0 0 0"}}>Record</th>
+          <th style={{padding:"7px 8px",textAlign:"right",fontSize:10,color:C.gold,background:C.navy}}>Current</th>
+          <th style={{padding:"7px 8px",textAlign:"right",fontSize:10,color:C.gold,background:C.navy,borderRadius:"0 8px 0 0"}}>Backup</th>
+        </tr></thead>
+        <tbody>
+          {rows.map((r,i)=>(<tr key={r.label} style={{background:i%2===0?"#fff":"#FAFBFC"}}>
+            <td style={{padding:"7px 8px",fontSize:12,fontWeight:700,color:C.navy,borderBottom:`1px solid ${C.border}`}}>{r.label}</td>
+            <td style={{padding:"7px 8px",fontSize:12,textAlign:"right",color:C.muted,borderBottom:`1px solid ${C.border}`}}>{r.cur}</td>
+            <td style={{padding:"7px 8px",fontSize:12,textAlign:"right",fontWeight:800,color:r.bak!==r.cur?C.red:C.navy,borderBottom:`1px solid ${C.border}`}}>{r.bak}</td>
+          </tr>))}
+        </tbody>
+      </table>
+    </div>
+    <div style={{display:"flex",gap:8}}>
+      <button onClick={onCancel} style={{flex:1,background:"#F0F4F8",color:C.navy,border:"none",borderRadius:12,padding:15,fontSize:14,fontWeight:700,cursor:"pointer",minHeight:50}}>Cancel</button>
+      <button onClick={onConfirm} style={{flex:2,background:C.red,color:"#fff",border:"none",borderRadius:12,padding:15,fontSize:14.5,fontWeight:800,cursor:"pointer",minHeight:50}}>⚠️ Replace &amp; Restore</button>
+    </div>
+  </ModalBase>);
+}
+
 // ─── MODALS ──────────────────────────────────────────────────────
 function SaleModal({data,onSave,onClose,initial}){
   const[f,sf]=useState(initial||{date:today(),billNo:"",customerName:"",productName:"",supplierName:"",meters:"",rate:"",amount:"",remarks:""});
@@ -1640,6 +2184,15 @@ function SaleModal({data,onSave,onClose,initial}){
     <F label="Date *"><input type="date" value={f.date} onChange={e=>s("date",e.target.value)} style={IS}/></F>
     <F label="Bill No"><input value={f.billNo} onChange={e=>s("billNo",e.target.value)} placeholder="Invoice / Bill number" style={IS}/></F>
     <F label="Customer *"><SmartInput value={f.customerName} onChange={v=>s("customerName",v)} placeholder="Customer name" list={data.customers.map(c=>c.name)} idPrefix="sl-c"/></F>
+    {(()=>{
+      const cust=data.customers.find(c=>c.name===f.customerName);
+      if(!cust||!cust.creditLimit||+cust.creditLimit<=0)return null;
+      const outstanding=computeCustomerOutstanding(f.customerName,data);
+      const overBy=outstanding-(+cust.creditLimit);
+      return(<div style={{fontSize:11.5,color:overBy>0?C.red:C.muted,marginTop:-9,marginBottom:13,fontWeight:overBy>0?700:400}}>
+        {overBy>0?`⚠️ Already ₹${fmt(overBy)} over credit limit (₹${fmt(cust.creditLimit)})`:`Outstanding: ₹${fmt(outstanding)} / Limit: ₹${fmt(cust.creditLimit)}`}
+      </div>);
+    })()}
     <F label="Product *"><SmartInput value={f.productName} onChange={selectProd} placeholder="Product" list={data.products.map(p=>p.name)} idPrefix="sl-p"/></F>
     <F label="Supplier"><SmartInput value={f.supplierName} onChange={v=>s("supplierName",v)} placeholder="Supplier" list={data.suppliers.map(s=>s.name)} idPrefix="sl-s"/></F>
     <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}>
@@ -1648,7 +2201,23 @@ function SaleModal({data,onSave,onClose,initial}){
     </div>
     <F label="Amount (₹)"><input type="number" value={f.amount} onChange={e=>s("amount",e.target.value)} style={{...IS,fontWeight:700}}/></F>
     <F label="Remarks"><input value={f.remarks} onChange={e=>s("remarks",e.target.value)} placeholder="Optional" style={IS}/></F>
-    <SaveBtn color={C.blue} onClick={()=>{if(!f.customerName||!f.amount)return alert("Customer and Amount required");onSave(f);}}>Save Sale</SaveBtn>
+    <SaveBtn color={C.blue} onClick={()=>{
+      if(!f.customerName||!f.amount)return alert("Customer and Amount required");
+      if(!warnIfDuplicateBillNo(f.billNo,data.tradingSales,initial?.id))return;
+      if(!warnIfNearDuplicateCustomer(f.customerName,data.customers))return;
+      const cust=data.customers.find(c=>c.name===f.customerName);
+      if(cust&&cust.creditLimit&&+cust.creditLimit>0){
+        const limit=+cust.creditLimit;
+        const currentOutstanding=computeCustomerOutstanding(f.customerName,data);
+        const oldAmount=initial?(+initial.amount||0):0;
+        const projected=currentOutstanding-oldAmount+(+f.amount||0);
+        if(projected>limit){
+          const ok=window.confirm(`⚠️ Credit Limit Alert!\n\n${f.customerName}'s credit limit is ₹${fmt(limit)}.\nProjected outstanding after this sale: ₹${fmt(projected)} — over by ₹${fmt(projected-limit)}.\n\nTap OK to save anyway, or Cancel to review.`);
+          if(!ok)return;
+        }
+      }
+      onSave(f);
+    }}>Save Sale</SaveBtn>
   </ModalBase>);
 }
 
@@ -1665,7 +2234,11 @@ function PaymentModal({data,onSave,onClose,preCustomer,initial}){
     <F label="Amount (₹) *"><input type="number" value={f.amount} onChange={e=>s("amount",e.target.value)} placeholder="0" style={{...IS,fontWeight:700}}/></F>
     <F label="Mode of Payment"><select value={f.mode} onChange={e=>s("mode",e.target.value)} style={IS}><option>NEFT</option><option>RTGS</option><option>Cheque</option><option>Cash</option><option>UPI</option></select></F>
     <F label="Remarks"><input value={f.remarks} onChange={e=>s("remarks",e.target.value)} placeholder="Cheque no, ref…" style={IS}/></F>
-    <SaveBtn color={C.green} onClick={()=>{if(!f.customerName||!f.amount)return alert("Customer and Amount required");onSave(f);}}>Save Payment</SaveBtn>
+    <SaveBtn color={C.green} onClick={()=>{
+      if(!f.customerName||!f.amount)return alert("Customer and Amount required");
+      if(!warnIfNearDuplicateCustomer(f.customerName,data.customers))return;
+      onSave(f);
+    }}>Save Payment</SaveBtn>
   </ModalBase>);
 }
 
@@ -1681,7 +2254,12 @@ function DebitModal({data,onSave,onClose,initial}){
     <F label="Against Bill No"><SmartInput value={f.originalBillNo} onChange={v=>s("originalBillNo",v)} placeholder="Original bill number" list={[...new Set(custBills)]} idPrefix="dn-b"/></F>
     <F label="Amount (₹) *"><input type="number" value={f.amount} onChange={e=>s("amount",e.target.value)} placeholder="0" style={{...IS,fontWeight:700}}/></F>
     <F label="Reason / Remarks"><input value={f.remarks} onChange={e=>s("remarks",e.target.value)} placeholder="Price difference, penalty, etc." style={IS}/></F>
-    <SaveBtn color={C.red} onClick={()=>{if(!f.customerName||!f.amount)return alert("Customer and Amount required");onSave(f);}}>Save Debit Note</SaveBtn>
+    <SaveBtn color={C.red} onClick={()=>{
+      if(!f.customerName||!f.amount)return alert("Customer and Amount required");
+      if(!warnIfDuplicateNoteNo(f.noteNo,data.debitNotes,initial?.id,"Debit Note"))return;
+      if(!warnIfNearDuplicateCustomer(f.customerName,data.customers))return;
+      onSave(f);
+    }}>Save Debit Note</SaveBtn>
   </ModalBase>);
 }
 
@@ -1703,12 +2281,17 @@ function CreditModal({data,onSave,onClose,initial}){
     </div>
     <F label="Amount (₹) *"><input type="number" value={f.amount} onChange={e=>s("amount",e.target.value)} placeholder="Auto or manual" style={{...IS,fontWeight:700}}/></F>
     <F label="Reason / Remarks"><input value={f.remarks} onChange={e=>s("remarks",e.target.value)} placeholder="Quality issue, excess, etc." style={IS}/></F>
-    <SaveBtn color={C.green} onClick={()=>{if(!f.customerName||!f.amount)return alert("Customer and Amount required");onSave(f);}}>Save Credit Note / Return</SaveBtn>
+    <SaveBtn color={C.green} onClick={()=>{
+      if(!f.customerName||!f.amount)return alert("Customer and Amount required");
+      if(!warnIfDuplicateNoteNo(f.noteNo,data.creditNotes,initial?.id,"Credit Note"))return;
+      if(!warnIfNearDuplicateCustomer(f.customerName,data.customers))return;
+      onSave(f);
+    }}>Save Credit Note / Return</SaveBtn>
   </ModalBase>);
 }
 
-function CustomerModal({onSave,onClose,initial}){
-  const[f,sf]=useState(initial||{name:"",type:"Trading",phone:"",city:"",gstin:"",creditDays:"30"});
+function CustomerModal({onSave,onClose,initial,existingCustomers}){
+  const[f,sf]=useState(initial||{name:"",type:"Trading",phone:"",city:"",gstin:"",creditDays:"30",creditLimit:""});
   const s=(k,v)=>sf(p=>({...p,[k]:v}));
   return(<ModalBase title={initial?"Edit Customer":"Add Customer"} onClose={onClose}>
     <F label="Name *"><input value={f.name} onChange={e=>s("name",e.target.value)} placeholder="Customer name" style={IS}/></F>
@@ -1726,7 +2309,16 @@ function CustomerModal({onSave,onClose,initial}){
         <option value="90">90 Days</option>
       </select>
     </F>
-    <SaveBtn color={C.navy} onClick={()=>{if(!f.name)return alert("Name required");onSave(f);}}>Save Customer</SaveBtn>
+    <F label="Credit Limit (₹) — leave blank for no limit"><input type="number" value={f.creditLimit||""} onChange={e=>s("creditLimit",e.target.value)} placeholder="e.g. 500000" style={IS}/></F>
+    <SaveBtn color={C.navy} onClick={()=>{
+      if(!f.name)return alert("Name required");
+      const dup=findDuplicateCustomer(f.name,existingCustomers,initial?.id);
+      if(dup){
+        const ok=window.confirm(`⚠️ A customer named "${dup.name}" already exists in Masters.\n\nAdding "${f.name}" again will create a duplicate master record with a separate ledger.\n\nTap OK to add anyway, or Cancel to go back.`);
+        if(!ok)return;
+      }
+      onSave(f);
+    }}>Save Customer</SaveBtn>
   </ModalBase>);
 }
 
