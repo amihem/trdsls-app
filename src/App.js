@@ -19,6 +19,51 @@ function computeCustomerOutstanding(name,data){
   const credit=(data.creditNotes||[]).filter(n=>n.customerName===name).reduce((a,n)=>a+(+n.amount||0),0);
   return Math.max(0,due+debit-paid-credit);
 }
+// Finds every still-open sale bill and its due date (Bill Date + that customer's Credit Days), sorted soonest-due first
+function computeDueBills(data){
+  const todayMs=new Date().setHours(0,0,0,0);
+  const creditDaysMap={};
+  data.customers.forEach(c=>{creditDaysMap[c.name]=parseInt(c.creditDays||30);});
+  const paid={};data.tradingPayments.forEach(p=>{paid[p.customerName]=(paid[p.customerName]||0)+(+p.amount||0);});
+  const credit={};(data.creditNotes||[]).forEach(n=>{credit[n.customerName]=(credit[n.customerName]||0)+(+n.amount||0);});
+  const byCust={};
+  data.tradingSales.forEach(s=>{if(!byCust[s.customerName])byCust[s.customerName]=[];byCust[s.customerName].push(s);});
+  const result=[];
+  Object.keys(byCust).forEach(name=>{
+    let rem=(paid[name]||0)+(credit[name]||0);
+    const creditDays=creditDaysMap[name]||30;
+    [...byCust[name]].sort((a,b)=>new Date(a.date)-new Date(b.date)).forEach(s=>{
+      const amt=+s.amount||0;
+      const d=Math.min(amt,rem);rem-=d;const left=amt-d;
+      if(left>0){
+        const dd=new Date(s.date);dd.setDate(dd.getDate()+creditDays);
+        const dueMs=dd.setHours(0,0,0,0);
+        const daysUntilDue=Math.round((dueMs-todayMs)/86400000);
+        result.push({customerName:name,billNo:s.billNo||"—",amount:left,date:s.date,dueDate:new Date(dueMs),daysUntilDue});
+      }
+    });
+  });
+  return result.sort((a,b)=>a.daysUntilDue-b.daysUntilDue);
+}
+
+// ── GST helpers ──────────────────────────────────────────────────
+// Seller (Navkar Fabrics / Amihem) is based in Delhi — used to decide CGST+SGST vs IGST.
+const SELLER_STATE="Delhi";
+const INDIA_STATES=["Delhi","Uttar Pradesh","Haryana","Punjab","Rajasthan","Gujarat","Maharashtra","Madhya Pradesh","Uttarakhand","Bihar","West Bengal","Tamil Nadu","Karnataka","Andhra Pradesh","Telangana","Kerala","Odisha","Chhattisgarh","Jharkhand","Assam","Himachal Pradesh","Jammu and Kashmir","Goa","Chandigarh","Puducherry","Other"];
+// Amount is treated as GST-INCLUSIVE. Splits it into taxable value + CGST/SGST (same state) or IGST (different state).
+function calcGST(amount,buyerState,gstRatePct){
+  const rate=(+gstRatePct||5);
+  const amt=+amount||0;
+  const taxable=amt/(1+rate/100);
+  const gstAmt=amt-taxable;
+  const sameState=normName(buyerState||SELLER_STATE)===normName(SELLER_STATE);
+  return{
+    taxable,gstAmt,rate,sameState,
+    cgst:sameState?gstAmt/2:0,
+    sgst:sameState?gstAmt/2:0,
+    igst:sameState?0:gstAmt,
+  };
+}
 // Finds an existing customer whose normalized name matches (used to catch duplicates like extra spaces / different casing)
 function findDuplicateCustomer(name,customers,excludeId){
   const n=normName(name);if(!n)return null;
@@ -136,7 +181,17 @@ function generateInvoice(sale,allSales,customer){
   const items=getInvoiceLineItems(sale,allSales);
   const total=items.reduce((a,s)=>a+(+s.amount||0),0);
   const totalQty=items.reduce((a,s)=>a+(+s.meters||0),0);
+  const buyerState=customer?.state||SELLER_STATE;
+  const gstBreak=items.reduce((acc,s)=>{
+    const g=calcGST(s.amount,buyerState,s.gstRate);
+    acc.taxable+=g.taxable;acc.cgst+=g.cgst;acc.sgst+=g.sgst;acc.igst+=g.igst;acc.rate=g.rate;acc.sameState=g.sameState;
+    return acc;
+  },{taxable:0,cgst:0,sgst:0,igst:0,rate:5,sameState:true});
   const rows=items.map((s,i)=>`<tr><td>${i+1}</td><td>${s.productName||"—"}</td><td style="text-align:right">${fmt(s.meters)}</td><td style="text-align:right">₹${fmt(s.rate)}</td><td style="text-align:right">₹${fmt(s.amount)}</td></tr>`).join("");
+  const gstRows=gstBreak.sameState
+    ?`<tr><td colspan="4" style="text-align:right">CGST @ ${gstBreak.rate/2}%</td><td style="text-align:right">₹${fmt(gstBreak.cgst)}</td></tr>
+      <tr><td colspan="4" style="text-align:right">SGST @ ${gstBreak.rate/2}%</td><td style="text-align:right">₹${fmt(gstBreak.sgst)}</td></tr>`
+    :`<tr><td colspan="4" style="text-align:right">IGST @ ${gstBreak.rate}% (${buyerState})</td><td style="text-align:right">₹${fmt(gstBreak.igst)}</td></tr>`;
   const win=window.open("","_blank");
   win.document.write(`<!DOCTYPE html><html><head><title>Invoice ${sale.billNo||sale.id}</title><style>
     body{font-family:Arial,sans-serif;font-size:13px;color:#111;padding:30px;max-width:800px;margin:auto;}
@@ -154,23 +209,30 @@ function generateInvoice(sale,allSales,customer){
     th{background:#0F1923;color:#E8C97E;padding:9px 10px;text-align:left;font-size:11.5px;}
     td{padding:8px 10px;border-bottom:1px solid #eee;font-size:12.5px;}
     tr:nth-child(even){background:#f9f9f9;}
+    .sub-row td{background:#F7F9FB;border:none;font-size:12px;}
+    .taxable-row td{border:none;font-size:12.5px;font-weight:700;border-top:1.5px solid #0F1923;}
     .tot-row td{background:#0F1923;color:#E8C97E;font-weight:bold;border:none;font-size:14px;}
     .footer{margin-top:40px;display:flex;justify-content:space-between;font-size:11px;color:#888;border-top:1px solid #eee;padding-top:16px;}
     .sign-line{margin-top:50px;border-top:1px solid #333;padding-top:6px;font-size:11px;text-align:center;}
   </style></head><body>
     <div class="hdr">
-      <div><div class="co">Navkar Fabrics</div><div class="tag">Fabric Trading &amp; Indenting</div></div>
-      <div><div class="inv-title">TAX INVOICE</div><div class="inv-meta">Invoice No: ${sale.billNo||"—"}<br/>Date: ${fmtD(sale.date)}</div></div>
+      <div><div class="co">Navkar Fabrics</div><div class="tag">Fabric Trading &amp; Indenting — Delhi</div></div>
+      <div><div class="inv-title">TAX INVOICE</div><div class="inv-meta">Invoice No: ${sale.billNo||"—"}<br/>Date: ${fmtD(sale.date)}<br/>${gstBreak.sameState?"Intra-state (CGST+SGST)":"Inter-state (IGST)"}</div></div>
     </div>
     <div class="parties">
       <div class="party-box"><div class="party-label">Bill To</div><div class="party-name">${sale.customerName}</div>
         ${customer&&customer.phone?`<div class="party-detail">📞 ${customer.phone}</div>`:""}
-        ${customer&&customer.city?`<div class="party-detail">📍 ${customer.city}</div>`:""}
+        ${customer&&customer.city?`<div class="party-detail">📍 ${customer.city}, ${buyerState}</div>`:`<div class="party-detail">📍 ${buyerState}</div>`}
         ${customer&&customer.gstin?`<div class="party-detail">GSTIN: ${customer.gstin}</div>`:""}
       </div>
     </div>
     <table><thead><tr><th>#</th><th>Product</th><th style="text-align:right">Qty (m)</th><th style="text-align:right">Rate</th><th style="text-align:right">Amount</th></tr></thead>
-    <tbody>${rows}<tr class="tot-row"><td colspan="2">TOTAL</td><td style="text-align:right">${fmt(totalQty)} m</td><td></td><td style="text-align:right">₹${fmt(total)}</td></tr></tbody></table>
+    <tbody>${rows}
+      <tr class="taxable-row"><td colspan="4" style="text-align:right">Taxable Value</td><td style="text-align:right">₹${fmt(gstBreak.taxable)}</td></tr>
+      ${gstRows}
+      <tr class="tot-row"><td colspan="4">GRAND TOTAL</td><td style="text-align:right">₹${fmt(total)}</td></tr>
+    </tbody></table>
+    <div style="font-size:10.5px;color:#999;margin-top:6px;">Total Qty: ${fmt(totalQty)} m · Prices are GST-inclusive.</div>
     <div class="footer">
       <div>Thank you for your business.</div>
       <div class="sign-line">Authorized Signatory</div>
@@ -450,6 +512,17 @@ function DashboardTab({data,tots,onNav,tradingOut,lastBackupAt,onShareBackup}){
   const outList=Object.values(tradingOut).filter(v=>Math.max(0,v.due+(v.debit||0)-v.paid-(v.credit||0))>0).sort((a,b)=>b.due-b.paid-(a.due-a.paid)).slice(0,5);
   const daysSinceBackup=lastBackupAt?Math.floor((Date.now()-new Date(lastBackupAt).getTime())/86400000):null;
   const backupOverdue=daysSinceBackup===null||daysSinceBackup>=7;
+
+  const phoneMap={};data.customers.forEach(c=>{phoneMap[c.name]=c.phone;});
+  const dueBills=computeDueBills(data);
+  const overdueList=dueBills.filter(b=>b.daysUntilDue<0);
+  const dueTodayList=dueBills.filter(b=>b.daysUntilDue===0);
+  const dueTomorrowList=dueBills.filter(b=>b.daysUntilDue===1);
+  const dueWeekList=dueBills.filter(b=>b.daysUntilDue>=2&&b.daysUntilDue<=7);
+  const urgentList=[...overdueList,...dueTodayList,...dueTomorrowList].slice(0,6);
+  const dueStatusText=(b)=>b.daysUntilDue<0?`overdue by ${-b.daysUntilDue}d`:b.daysUntilDue===0?"due today":b.daysUntilDue===1?"due tomorrow":`due in ${b.daysUntilDue}d`;
+  const buildDueWA=(b)=>`🏢 *Navkar Fabrics*\n\nDear *${b.customerName}*,\n\nReminder: Payment of ₹${fmt(b.amount)} for Bill No ${b.billNo} (dated ${fmtD(b.date)}) is ${dueStatusText(b)}.\n\nKindly arrange payment at the earliest.\n\nRegards\nNavkar Fabrics`;
+
   return(<div>
     {backupOverdue&&<div style={{background:"#FEF6E7",border:"1px solid #F5D397",borderRadius:14,padding:"13px 15px",marginBottom:16,display:"flex",alignItems:"center",gap:10,flexWrap:"wrap"}}>
       <span style={{fontSize:20}}>⚠️</span>
@@ -459,6 +532,29 @@ function DashboardTab({data,tots,onNav,tradingOut,lastBackupAt,onShareBackup}){
       </div>
       <button onClick={onShareBackup} style={{background:"#7D5A00",color:"#fff",border:"none",borderRadius:9,padding:"9px 14px",fontSize:12,fontWeight:700,cursor:"pointer",flexShrink:0}}>📤 Share Now</button>
     </div>}
+
+    <div style={{background:C.card,borderRadius:14,padding:16,marginBottom:16,boxShadow:"0 1px 8px rgba(0,0,0,0.06)"}}>
+      <div style={{fontWeight:800,fontSize:14,color:C.navy,marginBottom:12}}>📅 Payment Due Reminders</div>
+      <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:8,marginBottom:urgentList.length>0?14:0}}>
+        <div style={{background:"#FDEDEC",borderRadius:10,padding:"9px 6px",textAlign:"center"}}><div style={{fontSize:17,fontWeight:900,color:"#922B21"}}>{overdueList.length}</div><div style={{fontSize:9,color:"#922B21",fontWeight:700,textTransform:"uppercase"}}>Overdue</div></div>
+        <div style={{background:"#FDEBD0",borderRadius:10,padding:"9px 6px",textAlign:"center"}}><div style={{fontSize:17,fontWeight:900,color:C.orange}}>{dueTodayList.length}</div><div style={{fontSize:9,color:C.orange,fontWeight:700,textTransform:"uppercase"}}>Today</div></div>
+        <div style={{background:"#FEF9E7",borderRadius:10,padding:"9px 6px",textAlign:"center"}}><div style={{fontSize:17,fontWeight:900,color:"#9A7B1E"}}>{dueTomorrowList.length}</div><div style={{fontSize:9,color:"#9A7B1E",fontWeight:700,textTransform:"uppercase"}}>Tomorrow</div></div>
+        <div style={{background:"#EAF4FC",borderRadius:10,padding:"9px 6px",textAlign:"center"}}><div style={{fontSize:17,fontWeight:900,color:C.blue}}>{dueWeekList.length}</div><div style={{fontSize:9,color:C.blue,fontWeight:700,textTransform:"uppercase"}}>This Week</div></div>
+      </div>
+      {urgentList.length===0&&<div style={{textAlign:"center",color:C.muted,fontSize:12.5,padding:"6px 0"}}>✅ No urgent dues — nothing overdue or due in the next 2 days.</div>}
+      {urgentList.map((b,i)=>{
+        const phone=phoneMap[b.customerName]||"";
+        const col=b.daysUntilDue<0?"#922B21":b.daysUntilDue===0?C.orange:"#9A7B1E";
+        return(<div key={i} style={{display:"flex",alignItems:"center",gap:8,padding:"9px 0",borderTop:i>0?`1px solid ${C.border}`:"none"}}>
+          <div style={{flex:1,minWidth:0}}>
+            <div style={{fontSize:12.5,fontWeight:700,color:C.navy}}>{b.customerName}</div>
+            <div style={{fontSize:10.5,color:col,fontWeight:600}}>{b.billNo} · ₹{fmt(b.amount)} · {dueStatusText(b)}</div>
+          </div>
+          <button onClick={()=>{const n=phone?"91"+String(phone).replace(/\D/g,"").slice(-10):"";window.open(`https://wa.me/${n}?text=${encodeURIComponent(buildDueWA(b))}`,"_blank");}} style={{background:"#E8FBF0",color:"#25D366",border:"1px solid #25D366",borderRadius:8,padding:"6px 10px",fontSize:11,fontWeight:700,cursor:"pointer",flexShrink:0}}>💬</button>
+        </div>);
+      })}
+    </div>
+
     <div style={{background:`linear-gradient(135deg,${C.navy},${C.navyMid})`,borderRadius:16,padding:"18px 20px",marginBottom:16,border:"1px solid rgba(232,201,126,0.25)"}}>
       <div style={{fontSize:10.5,color:C.gold,letterSpacing:2,textTransform:"uppercase",fontWeight:700}}>Commission Earned (on Payments)</div>
       <div style={{fontSize:34,fontWeight:900,color:C.gold,marginTop:6}}>₹{fmt(totComm)}</div>
@@ -1722,7 +1818,7 @@ function MastersTab({data,onAdd,onDel,onEdit,onImportExcel,trash,onRestore,onPer
       {customers.length===0&&<Empty text={q?"No customers match your search.":"No customers yet. Import Excel to auto-populate."}/>}
       {customers.map(c=>(<div key={c.id} style={{background:C.card,borderRadius:13,padding:"13px 15px",marginBottom:10,boxShadow:"0 1px 8px rgba(0,0,0,0.06)"}}>
         <Row><B>{c.name}</B><span style={{fontSize:11,background:"#F0F4F8",padding:"3px 9px",borderRadius:10,color:C.muted,fontWeight:600}}>{c.type}</span></Row>
-        {c.phone&&<Mute>{c.phone}</Mute>}{c.city&&<Mute>{c.city}</Mute>}{c.gstin&&<Mute>GST: {c.gstin}</Mute>}
+        {c.phone&&<Mute>{c.phone}</Mute>}{c.city&&<Mute>{c.city}{c.state?`, ${c.state}`:""}{c.state&&normName(c.state)!==normName(SELLER_STATE)?" (IGST)":""}</Mute>}{c.gstin&&<Mute>GST: {c.gstin}</Mute>}
         <Mute>Credit Days: {c.creditDays||"30"} days</Mute>
         {c.creditLimit&&+c.creditLimit>0&&<Mute>Credit Limit: ₹{fmt(+c.creditLimit)}</Mute>}
         <div style={{display:"flex",gap:8,marginTop:10}}>
@@ -2176,7 +2272,7 @@ function BackupPreviewModal({preview,currentData,onConfirm,onCancel}){
 
 // ─── MODALS ──────────────────────────────────────────────────────
 function SaleModal({data,onSave,onClose,initial}){
-  const[f,sf]=useState(initial||{date:today(),billNo:"",customerName:"",productName:"",supplierName:"",meters:"",rate:"",amount:"",remarks:""});
+  const[f,sf]=useState(initial||{date:today(),billNo:"",customerName:"",productName:"",supplierName:"",meters:"",rate:"",amount:"",gstRate:"5",remarks:""});
   const s=(k,v)=>sf(p=>({...p,[k]:v}));
   const selectProd=(name)=>{const p=data.products.find(p=>p.name===name);sf(pr=>({...pr,productName:name,supplierName:p?.supplierName||pr.supplierName}));};
   useEffect(()=>{if(f.meters&&f.rate&&!initial)s("amount",(parseFloat(f.meters)*parseFloat(f.rate)).toFixed(2));},[f.meters,f.rate]);
@@ -2199,7 +2295,26 @@ function SaleModal({data,onSave,onClose,initial}){
       <F label="Meters"><input type="number" value={f.meters} onChange={e=>s("meters",e.target.value)} placeholder="0" style={IS}/></F>
       <F label="Rate (₹/m)"><input type="number" value={f.rate} onChange={e=>s("rate",e.target.value)} placeholder="0" style={IS}/></F>
     </div>
-    <F label="Amount (₹)"><input type="number" value={f.amount} onChange={e=>s("amount",e.target.value)} style={{...IS,fontWeight:700}}/></F>
+    <F label="Amount (₹) — GST inclusive"><input type="number" value={f.amount} onChange={e=>s("amount",e.target.value)} style={{...IS,fontWeight:700}}/></F>
+    <F label="GST % (price entered above already includes this)">
+      <select value={f.gstRate||"5"} onChange={e=>s("gstRate",e.target.value)} style={IS}>
+        <option value="0">0% (Exempt)</option>
+        <option value="5">5%</option>
+        <option value="12">12%</option>
+        <option value="18">18%</option>
+      </select>
+    </F>
+    {(()=>{
+      if(!f.amount||!f.customerName)return null;
+      const cust=data.customers.find(c=>c.name===f.customerName);
+      const buyerState=cust?.state||SELLER_STATE;
+      const g=calcGST(f.amount,buyerState,f.gstRate);
+      return(<div style={{background:"#F8FAFC",borderRadius:10,padding:"10px 12px",marginBottom:13,fontSize:11.5,color:C.navy,lineHeight:1.7}}>
+        <div>Taxable Value: <b>₹{fmt(g.taxable)}</b></div>
+        {g.sameState?<div>CGST {(g.rate/2)}% + SGST {(g.rate/2)}%: <b>₹{fmt(g.cgst)} + ₹{fmt(g.sgst)}</b></div>:<div>IGST {g.rate}% ({buyerState} — inter-state): <b>₹{fmt(g.igst)}</b></div>}
+        <div style={{color:C.muted,fontSize:10.5,marginTop:2}}>Total (as entered): ₹{fmt(f.amount)}</div>
+      </div>);
+    })()}
     <F label="Remarks"><input value={f.remarks} onChange={e=>s("remarks",e.target.value)} placeholder="Optional" style={IS}/></F>
     <SaveBtn color={C.blue} onClick={()=>{
       if(!f.customerName||!f.amount)return alert("Customer and Amount required");
@@ -2291,13 +2406,18 @@ function CreditModal({data,onSave,onClose,initial}){
 }
 
 function CustomerModal({onSave,onClose,initial,existingCustomers}){
-  const[f,sf]=useState(initial||{name:"",type:"Trading",phone:"",city:"",gstin:"",creditDays:"30",creditLimit:""});
+  const[f,sf]=useState(initial||{name:"",type:"Trading",phone:"",city:"",state:"Delhi",gstin:"",creditDays:"30",creditLimit:""});
   const s=(k,v)=>sf(p=>({...p,[k]:v}));
   return(<ModalBase title={initial?"Edit Customer":"Add Customer"} onClose={onClose}>
     <F label="Name *"><input value={f.name} onChange={e=>s("name",e.target.value)} placeholder="Customer name" style={IS}/></F>
     <F label="Type"><select value={f.type} onChange={e=>s("type",e.target.value)} style={IS}><option>Trading</option><option>Agency</option><option>Both</option></select></F>
     <F label="Phone"><input type="tel" value={f.phone} onChange={e=>s("phone",e.target.value)} placeholder="10-digit mobile" style={IS}/></F>
     <F label="City"><input value={f.city} onChange={e=>s("city",e.target.value)} placeholder="City" style={IS}/></F>
+    <F label="State (for GST — CGST+SGST if same as seller's Delhi, else IGST)">
+      <select value={f.state||"Delhi"} onChange={e=>s("state",e.target.value)} style={IS}>
+        {INDIA_STATES.map(st=><option key={st} value={st}>{st}</option>)}
+      </select>
+    </F>
     <F label="GSTIN"><input value={f.gstin} onChange={e=>s("gstin",e.target.value)} placeholder="GST number" style={IS}/></F>
     <F label="Credit Days (for ageing follow-up)">
       <select value={f.creditDays||"30"} onChange={e=>s("creditDays",e.target.value)} style={IS}>
