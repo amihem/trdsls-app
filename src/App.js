@@ -1,11 +1,28 @@
 import { useState, useEffect, useRef, useMemo } from "react";
 import * as XLSX from "xlsx";
 import { BarChart, Bar, LineChart, Line, AreaChart, Area, ComposedChart, PieChart, Pie, Cell, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from "recharts";
+import { supabase } from './supabaseClient';
+import Login from './Login';
 
 const SK = "fabric-sales-v3-trading";
 const EMPTY = { customers:[], suppliers:[], products:[], tradingSales:[], tradingPayments:[], debitNotes:[], creditNotes:[], enquiries:[], trash:[] };
-async function loadData(){try{const r=localStorage.getItem(SK);if(r)return{...EMPTY,...JSON.parse(r)};}catch(e){}return{...EMPTY};}
-async function saveData(d){try{localStorage.setItem(SK,JSON.stringify(d));}catch(e){}}
+async function loadData(userId){
+  try{
+    const{data:row,error}=await supabase.from('user_data').select('data').eq('user_id',userId).maybeSingle();
+    if(error)console.error('SUPABASE LOAD ERROR:',error);
+    if(row&&row.data)return{...EMPTY,...row.data};
+  }catch(e){console.error('SUPABASE LOAD EXCEPTION:',e);}
+  // one-time migration: no Supabase row yet, fall back to old browser localStorage data if present
+  try{const r=localStorage.getItem(SK);if(r)return{...EMPTY,...JSON.parse(r)};}catch(e){}
+  return{...EMPTY};
+}
+async function saveData(userId,d){
+  try{
+    const{error}=await supabase.from('user_data').upsert({user_id:userId,data:d,updated_at:new Date().toISOString()});
+    if(error)console.error('SUPABASE SAVE ERROR:',error);
+    else console.log('Saved to Supabase OK');
+  }catch(e){console.error('SUPABASE SAVE EXCEPTION:',e);}
+}
 
 const fmt   = n => Number(n||0).toLocaleString("en-IN",{maximumFractionDigits:2});
 const fmtD  = d => d?new Date(d).toLocaleDateString("en-IN"):"—";
@@ -279,7 +296,7 @@ const TABS=[
   {id:"Reports",icon:"📋",label:"Reports"},
 ];
 
-export default function App(){
+function App({user}){
   const[tab,setTab]=useState("Dashboard");
   const[data,setData]=useState(null);
   const[modal,setModal]=useState(null);
@@ -290,8 +307,8 @@ export default function App(){
   const restoreRef=useRef(null);const importRef=useRef(null);
   const navigateTab=(tabId,hint=null)=>{setNavHint(hint);setTab(tabId);};
 
-  useEffect(()=>{loadData().then(setData);setLastBackupAt(getLastBackup());},[]);
-  useEffect(()=>{if(data)saveData(data);},[data]);
+  useEffect(()=>{loadData(user.id).then(setData);setLastBackupAt(getLastBackup());},[]);
+  useEffect(()=>{if(data)saveData(user.id,data);},[data]);
 
   const showToast=(msg,err,action)=>{setToast({msg,err,action});setTimeout(()=>setToast(null),action?7000:3000);};
   const add=(section,rec)=>{setData(p=>({...p,[section]:[...p[section],{...rec,id:uid()}]}));showToast("Saved successfully.");setModal(null);};
@@ -2463,3 +2480,25 @@ function ProductModal({data,onSave,onClose,initial}){
     <SaveBtn color={C.navy} onClick={()=>{if(!f.name)return alert("Name required");onSave(f);}}>Save Product</SaveBtn>
   </ModalBase>);
 }
+
+function AuthGate(){
+  const[session,setSession]=useState(null);
+  const[checking,setChecking]=useState(true);
+
+  useEffect(()=>{
+    supabase.auth.getSession().then(({data:{session}})=>{
+      setSession(session);
+      setChecking(false);
+    });
+    const{data:listener}=supabase.auth.onAuthStateChange((_event,session)=>{
+      setSession(session);
+    });
+    return()=>listener.subscription.unsubscribe();
+  },[]);
+
+  if(checking)return <div style={{padding:40,textAlign:"center",fontFamily:"sans-serif"}}>Loading…</div>;
+  if(!session)return <Login/>;
+  return <App user={session.user}/>;
+}
+
+export default AuthGate;
