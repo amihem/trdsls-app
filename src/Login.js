@@ -88,8 +88,9 @@ export default function Login(){
         {/* Logo / Branding */}
         <div style={{ textAlign:"center", marginBottom:28 }}>
           <div style={{ fontSize:44, marginBottom:6 }}>🧵</div>
-          <div style={{ fontSize:11, letterSpacing:3, color:C.gold, textTransform:"uppercase", fontWeight:700 }}>Amihem</div>
-          <div style={{ fontSize:26, fontWeight:900, color:"#fff", marginTop:2 }}>Sales</div>
+          <div style={{ fontSize:11, letterSpacing:3, color:C.gold, textTransform:"uppercase", fontWeight:700 }}>AMIHEM</div>
+          <div style={{ fontSize:26, fontWeight:900, color:"#fff", marginTop:2 }}>Business</div>
+          <div style={{ fontSize:11, color:"rgba(255,255,255,0.45)", marginTop:6, letterSpacing:0.3 }}>Sales • Inventory • Collections</div>
         </div>
 
         {/* Card */}
@@ -105,7 +106,7 @@ export default function Login(){
           </div>
           <div style={{ fontSize:13, color:C.muted, marginBottom:20 }}>
             {mode==="login" && "Login to access your dashboard"}
-            {mode==="signup" && "Set up your Amihem Sales account"}
+            {mode==="signup" && "Set up your AMIHEM Business account"}
             {mode==="forgot" && "We'll email you a reset link"}
             {mode==="otp" && (otpSent ? "Enter the code sent to your email" : "We'll email you a one-time code")}
           </div>

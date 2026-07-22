@@ -1,7 +1,7 @@
 {
-  "name": "Amihem Sales",
-  "short_name": "Amihem Sales",
-  "description": "Fabric trading — sales, outstanding, ledger & commission manager",
+  "name": "AMIHEM Business",
+  "short_name": "AMIHEM",
+  "description": "Sales • Inventory • Collections",
   "start_url": "/",
   "scope": "/",
   "display": "standalone",
