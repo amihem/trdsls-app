@@ -139,14 +139,14 @@ function timeAgo(iso){
   const days=Math.floor(hrs/24);return`${days}d ago`;
 }
 function excelDateToJS(v){if(v instanceof Date)return v;if(typeof v==="number")return new Date(Math.round((v-25569)*86400*1000));if(typeof v==="string"){const d=new Date(v);if(!isNaN(d))return d;}return null;}
-function exportBackup(data){const b=new Blob([JSON.stringify(data,null,2)],{type:"application/json"});const a=document.createElement("a");a.href=URL.createObjectURL(b);a.download=`FabricSales_${today()}.json`;a.click();try{localStorage.setItem(SK+"-lastbackup",new Date().toISOString());}catch(e){}}
+function exportBackup(data){const b=new Blob([JSON.stringify(data,null,2)],{type:"application/json"});const a=document.createElement("a");a.href=URL.createObjectURL(b);a.download=`AMIHEMBusiness_${today()}.json`;a.click();try{localStorage.setItem(SK+"-lastbackup",new Date().toISOString());}catch(e){}}
 function getLastBackup(){try{return localStorage.getItem(SK+"-lastbackup");}catch(e){return null;}}
 async function shareBackupNative(data){
-  const filename=`FabricSales_${today()}.json`;
+  const filename=`AMIHEMBusiness_${today()}.json`;
   try{
     const file=new File([JSON.stringify(data,null,2)],filename,{type:"application/json"});
     if(navigator.canShare&&navigator.canShare({files:[file]})){
-      await navigator.share({files:[file],title:"Amihem Sales Backup",text:`Amihem Sales backup — ${today()}`});
+      await navigator.share({files:[file],title:"AMIHEM Business Backup",text:`AMIHEM Business backup — ${today()}`});
       try{localStorage.setItem(SK+"-lastbackup",new Date().toISOString());}catch(e){}
       return "shared";
     }
@@ -183,7 +183,7 @@ function SmartInput({value,onChange,placeholder,list,idPrefix}){const id=`${idPr
 
 function generatePDF(title,content){
   const win=window.open("","_blank");
-  win.document.write(`<!DOCTYPE html><html><head><title>${title}</title><style>body{font-family:Arial,sans-serif;font-size:13px;color:#111;padding:30px;max-width:800px;margin:auto;}h1{font-size:20px;border-bottom:2px solid #111;padding-bottom:8px;}table{width:100%;border-collapse:collapse;margin-top:16px;}th{background:#0F1923;color:#E8C97E;padding:8px 10px;text-align:left;font-size:12px;}td{padding:7px 10px;border-bottom:1px solid #eee;font-size:12px;}tr:nth-child(even){background:#f9f9f9;}.tot td{background:#0F1923;color:#E8C97E;font-weight:bold;border:none;}.hdr{display:flex;justify-content:space-between;margin-bottom:20px;}.co{font-size:22px;font-weight:bold;color:#0F1923;}</style></head><body><div class="hdr"><div><div class="co">Amihem Sales</div><div style="font-size:12px;color:#666">Trading Sales Report</div></div><div style="text-align:right;font-size:12px;color:#666">Date: ${new Date().toLocaleDateString("en-IN")}</div></div><h1>${title}</h1>${content}<script>window.onload=()=>{window.print();}<\/script></body></html>`);
+  win.document.write(`<!DOCTYPE html><html><head><title>${title}</title><style>body{font-family:Arial,sans-serif;font-size:13px;color:#111;padding:30px;max-width:800px;margin:auto;}h1{font-size:20px;border-bottom:2px solid #111;padding-bottom:8px;}table{width:100%;border-collapse:collapse;margin-top:16px;}th{background:#0F1923;color:#E8C97E;padding:8px 10px;text-align:left;font-size:12px;}td{padding:7px 10px;border-bottom:1px solid #eee;font-size:12px;}tr:nth-child(even){background:#f9f9f9;}.tot td{background:#0F1923;color:#E8C97E;font-weight:bold;border:none;}.hdr{display:flex;justify-content:space-between;margin-bottom:20px;}.co{font-size:22px;font-weight:bold;color:#0F1923;}</style></head><body><div class="hdr"><div><div class="co">AMIHEM Business</div><div style="font-size:12px;color:#666">Trading Sales Report</div></div><div style="text-align:right;font-size:12px;color:#666">Date: ${new Date().toLocaleDateString("en-IN")}</div></div><h1>${title}</h1>${content}<script>window.onload=()=>{window.print();}<\/script></body></html>`);
   win.document.close();
 }
 
@@ -351,6 +351,10 @@ function App({user}){
     else if(result==="cancelled"){/* user cancelled the share sheet — do nothing */}
     else{exportBackup(data);setLastBackupAt(getLastBackup());showToast("Direct share isn't supported here — file downloaded, attach it manually in WhatsApp/Email.");}
   };
+  const handleLogout=()=>{
+    if(!window.confirm("Log out of this account?\n\nYour data stays safely synced in the cloud — you'll just need to sign in again to see it here."))return;
+    supabase.auth.signOut();
+  };
 
   const[excelPreview,setExcelPreview]=useState(null);
   const[backupPreview,setBackupPreview]=useState(null);
@@ -450,7 +454,7 @@ function App({user}){
 
   const Sidebar=()=>(
     <div style={{width:220,background:C.navy,minHeight:"100vh",position:"fixed",left:0,top:0,zIndex:150,display:"flex",flexDirection:"column",padding:"20px 0"}}>
-      <div style={{padding:"0 20px 24px"}}><div style={{fontSize:10,letterSpacing:2.5,color:C.gold,textTransform:"uppercase",fontWeight:700}}>Amihem</div><div style={{fontSize:20,fontWeight:900,color:"#fff",marginTop:4}}>Sales</div></div>
+      <div style={{padding:"0 20px 24px"}}><div style={{fontSize:10,letterSpacing:2.5,color:C.gold,textTransform:"uppercase",fontWeight:700}}>AMIHEM</div><div style={{fontSize:20,fontWeight:900,color:"#fff",marginTop:4}}>Business</div><div style={{fontSize:9,color:"rgba(255,255,255,0.4)",marginTop:3,letterSpacing:0.3}}>Sales • Inventory • Collections</div></div>
       <div style={{padding:"0 20px 14px"}}>
         <button onClick={()=>setSearchOpen(true)} style={{width:"100%",background:"rgba(255,255,255,0.08)",border:"1px solid rgba(255,255,255,0.15)",borderRadius:10,padding:"9px 12px",color:"rgba(255,255,255,0.6)",fontSize:12.5,textAlign:"left",cursor:"pointer",display:"flex",alignItems:"center",gap:8}}>🔍 Search everything…</button>
       </div>
@@ -460,6 +464,10 @@ function App({user}){
         <button onClick={handleBackupClick} style={{...hdrBtn(),flexDirection:"row",gap:8,width:"100%",justifyContent:"flex-start",padding:"10px 12px"}}>☁️ <span style={{fontSize:12}}>Backup</span></button>
         <button onClick={handleShareBackup} style={{...hdrBtn(),flexDirection:"row",gap:8,width:"100%",justifyContent:"flex-start",padding:"10px 12px"}}>📤 <span style={{fontSize:12}}>Share (WhatsApp/Email)</span></button>
         <button onClick={()=>restoreRef.current&&restoreRef.current.click()} style={{...hdrBtn(),flexDirection:"row",gap:8,width:"100%",justifyContent:"flex-start",padding:"10px 12px"}}>📂 <span style={{fontSize:12}}>Restore</span></button>
+        <div style={{borderTop:"1px solid rgba(255,255,255,0.08)",marginTop:4,paddingTop:10}}>
+          {user?.email&&<div style={{fontSize:10.5,color:"rgba(255,255,255,0.4)",padding:"0 2px 8px",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{user.email}</div>}
+          <button onClick={handleLogout} style={{...hdrBtn(),flexDirection:"row",gap:8,width:"100%",justifyContent:"flex-start",padding:"10px 12px",background:"rgba(231,76,60,0.15)",border:"1px solid rgba(231,76,60,0.3)"}}>🚪 <span style={{fontSize:12,color:"#F5B7B1"}}>Log Out</span></button>
+        </div>
       </div>
     </div>
   );
@@ -469,12 +477,13 @@ function App({user}){
       <style>{`@media(min-width:768px){.mob{display:none!important}.desk{display:flex!important}.main{margin-left:220px!important}}@media(max-width:767px){.mob{display:flex!important}.desk{display:none!important}.main{margin-left:0!important;padding-bottom:80px!important}}.main{max-width:860px;padding:18px 16px 40px;}`}</style>
       <div className="desk" style={{display:"none"}}><Sidebar/></div>
       <div className="mob" style={{display:"none",background:C.navy,padding:"calc(env(safe-area-inset-top,0px)+12px) 16px 10px",position:"sticky",top:0,zIndex:100,boxShadow:"0 2px 20px rgba(0,0,0,0.4)",alignItems:"center",justifyContent:"space-between",gap:8}}>
-        <div><div style={{fontSize:9,letterSpacing:2,color:C.gold,textTransform:"uppercase",fontWeight:700}}>Amihem</div><div style={{fontSize:18,fontWeight:900,color:"#fff"}}>Sales</div></div>
+        <div><div style={{fontSize:9,letterSpacing:2,color:C.gold,textTransform:"uppercase",fontWeight:700}}>AMIHEM</div><div style={{fontSize:18,fontWeight:900,color:"#fff"}}>Business</div></div>
         <div style={{display:"flex",gap:6}}>
           <button onClick={()=>importRef.current&&importRef.current.click()} style={hdrBtn()}><span style={{fontSize:18}}>📊</span><span style={{fontSize:9}}>Excel</span></button>
           <button onClick={handleBackupClick} style={hdrBtn()}><span style={{fontSize:18}}>☁️</span><span style={{fontSize:9}}>Backup</span></button>
           <button onClick={handleShareBackup} style={hdrBtn()}><span style={{fontSize:18}}>📤</span><span style={{fontSize:9}}>Share</span></button>
           <button onClick={()=>restoreRef.current&&restoreRef.current.click()} style={hdrBtn()}><span style={{fontSize:18}}>📂</span><span style={{fontSize:9}}>Restore</span></button>
+          <button onClick={handleLogout} style={{...hdrBtn(),minWidth:44,background:"rgba(231,76,60,0.18)"}}><span style={{fontSize:18}}>🚪</span></button>
         </div>
       </div>
       <div className="mob" style={{display:"none",background:C.navy,padding:"0 16px 10px"}}>
@@ -1818,9 +1827,9 @@ function MastersTab({data,onAdd,onDel,onEdit,onImportExcel,trash,onRestore,onPer
   const[view,setView]=useState(initialView||"customers");
   const[search,setSearch]=useState(initialSearch||"");
   const q=search.trim().toLowerCase();
-  const customers=data.customers.filter(c=>!q||c.name.toLowerCase().includes(q)||(c.phone||"").includes(q)||(c.city||"").toLowerCase().includes(q));
-  const suppliers=data.suppliers.filter(s=>!q||s.name.toLowerCase().includes(q)||(s.city||"").toLowerCase().includes(q));
-  const products=data.products.filter(p=>!q||p.name.toLowerCase().includes(q)||(p.supplierName||"").toLowerCase().includes(q));
+  const customers=q?data.customers.filter(c=>c.name.toLowerCase().includes(q)||(c.phone||"").includes(q)||(c.city||"").toLowerCase().includes(q)):[];
+  const suppliers=q?data.suppliers.filter(s=>s.name.toLowerCase().includes(q)||(s.city||"").toLowerCase().includes(q)):[];
+  const products=q?data.products.filter(p=>p.name.toLowerCase().includes(q)||(p.supplierName||"").toLowerCase().includes(q)):[];
   const searchPlaceholder=view==="customers"?"🔍 Search customer name, phone, city…":view==="suppliers"?"🔍 Search supplier name, city…":view==="products"?"🔍 Search product name, supplier…":"";
   return(<div>
     <div style={{background:`linear-gradient(135deg,${C.navyMid},${C.navy})`,borderRadius:12,padding:"14px 16px",marginBottom:14,border:"1px solid rgba(232,201,126,0.3)"}}>
@@ -1832,7 +1841,7 @@ function MastersTab({data,onAdd,onDel,onEdit,onImportExcel,trash,onRestore,onPer
     {view!=="trash"&&<input placeholder={searchPlaceholder} value={search} onChange={e=>setSearch(e.target.value)} style={{...IS,margin:"10px 0"}}/>}
     {view==="customers"&&<>
       <div style={{margin:"2px 0 8px"}}><Btn color={C.navy} onClick={()=>onAdd({type:"customer"})}>+ Add Customer</Btn></div>
-      {customers.length===0&&<Empty text={q?"No customers match your search.":"No customers yet. Import Excel to auto-populate."}/>}
+      {customers.length===0&&<Empty text={q?"No customers match your search.":`Search above to find a customer to edit (${data.customers.length} total).`}/>}
       {customers.map(c=>(<div key={c.id} style={{background:C.card,borderRadius:13,padding:"13px 15px",marginBottom:10,boxShadow:"0 1px 8px rgba(0,0,0,0.06)"}}>
         <Row><B>{c.name}</B><span style={{fontSize:11,background:"#F0F4F8",padding:"3px 9px",borderRadius:10,color:C.muted,fontWeight:600}}>{c.type}</span></Row>
         {c.phone&&<Mute>{c.phone}</Mute>}{c.city&&<Mute>{c.city}{c.state?`, ${c.state}`:""}{c.state&&normName(c.state)!==normName(SELLER_STATE)?" (IGST)":""}</Mute>}{c.gstin&&<Mute>GST: {c.gstin}</Mute>}
@@ -1846,7 +1855,7 @@ function MastersTab({data,onAdd,onDel,onEdit,onImportExcel,trash,onRestore,onPer
     </>}
     {view==="suppliers"&&<>
       <div style={{margin:"2px 0 8px"}}><Btn color={C.navy} onClick={()=>onAdd({type:"supplier"})}>+ Add Supplier</Btn></div>
-      {suppliers.length===0&&<Empty text={q?"No suppliers match your search.":"No suppliers yet."}/>}
+      {suppliers.length===0&&<Empty text={q?"No suppliers match your search.":`Search above to find a supplier to edit (${data.suppliers.length} total).`}/>}
       {suppliers.map(s=>(<div key={s.id} style={{background:C.card,borderRadius:13,padding:"13px 15px",marginBottom:10,boxShadow:"0 1px 8px rgba(0,0,0,0.06)"}}>
         <B>{s.name}</B>{s.phone&&<Mute>{s.phone}</Mute>}{s.city&&<Mute>{s.city}</Mute>}
         <div style={{display:"flex",gap:8,marginTop:10}}>
@@ -1857,7 +1866,7 @@ function MastersTab({data,onAdd,onDel,onEdit,onImportExcel,trash,onRestore,onPer
     </>}
     {view==="products"&&<>
       <div style={{margin:"2px 0 8px"}}><Btn color={C.navy} onClick={()=>onAdd({type:"product"})}>+ Add Product</Btn></div>
-      {products.length===0&&<Empty text={q?"No products match your search.":"No products yet."}/>}
+      {products.length===0&&<Empty text={q?"No products match your search.":`Search above to find a product to edit (${data.products.length} total).`}/>}
       {products.map(p=>(<div key={p.id} style={{background:C.card,borderRadius:13,padding:"13px 15px",marginBottom:10,boxShadow:"0 1px 8px rgba(0,0,0,0.06)"}}>
         <Row><B>{p.name}</B><span style={{fontSize:11,color:C.muted}}>{p.unit}</span></Row>
         {p.supplierName&&<Mute>{p.supplierName}</Mute>}
