@@ -5,7 +5,7 @@ import { supabase } from './supabaseClient';
 import Login from './Login';
 
 const SK = "fabric-sales-v3-trading";
-const EMPTY = { customers:[], suppliers:[], products:[], tradingSales:[], tradingPayments:[], debitNotes:[], creditNotes:[], enquiries:[], trash:[] };
+const EMPTY = { customers:[], suppliers:[], products:[], tradingSales:[], tradingPayments:[], debitNotes:[], creditNotes:[], enquiries:[], trash:[], companySettings:{name:"Navkar Fabrics",address:"",gstin:"",phone:"",email:"",state:"Delhi",bankName:"",bankAccount:"",bankIFSC:"",terms:"1. Goods once sold will not be taken back.\n2. Interest @ 18% p.a. will be charged if payment is not made within the stipulated time.\n3. Subject to jurisdiction only."} };
 async function loadData(userId){
   try{
     const{data:row,error}=await supabase.from('user_data').select('data').eq('user_id',userId).maybeSingle();
@@ -29,6 +29,27 @@ const fmtD  = d => d?new Date(d).toLocaleDateString("en-IN"):"—";
 const today = () => new Date().toISOString().split("T")[0];
 const uid   = () => Date.now()+"-"+Math.random().toString(36).slice(2,6);
 const normName = s => String(s||"").trim().toLowerCase().replace(/\s+/g," ");
+function numberToWordsIndian(num){
+  num=Math.round(+num||0);
+  if(num===0)return"Zero";
+  const ones=["","One","Two","Three","Four","Five","Six","Seven","Eight","Nine","Ten","Eleven","Twelve","Thirteen","Fourteen","Fifteen","Sixteen","Seventeen","Eighteen","Nineteen"];
+  const tens=["","","Twenty","Thirty","Forty","Fifty","Sixty","Seventy","Eighty","Ninety"];
+  const twoDigit=(n)=>n<20?ones[n]:tens[Math.floor(n/10)]+(n%10?" "+ones[n%10]:"");
+  const threeDigit=(n)=>{
+    if(n<100)return twoDigit(n);
+    return ones[Math.floor(n/100)]+" Hundred"+(n%100?" "+twoDigit(n%100):"");
+  };
+  const parts=[];
+  const crore=Math.floor(num/10000000);num%=10000000;
+  const lakh=Math.floor(num/100000);num%=100000;
+  const thousand=Math.floor(num/1000);num%=1000;
+  const hundred=num;
+  if(crore)parts.push(threeDigit(crore)+" Crore");
+  if(lakh)parts.push(threeDigit(lakh)+" Lakh");
+  if(thousand)parts.push(threeDigit(thousand)+" Thousand");
+  if(hundred)parts.push(threeDigit(hundred));
+  return parts.join(" ");
+}
 function computeCustomerOutstanding(name,data){
   const due=data.tradingSales.filter(s=>s.customerName===name).reduce((a,s)=>a+(+s.amount||0),0);
   const paid=data.tradingPayments.filter(p=>p.customerName===name).reduce((a,p)=>a+(+p.amount||0),0);
@@ -47,7 +68,7 @@ function computeOpenBillsForCustomer(customerName,data){
   sales.forEach(s=>{
     const amt=+s.amount||0;
     const d=Math.min(amt,rem);rem-=d;const left=amt-d;
-    if(left>0)open.push({billNo:s.billNo||"—",date:s.date,billAmount:amt,outstanding:left,meters:+s.meters||0});
+    if(left>0)open.push({billNo:s.billNo||"—",date:s.date,billAmount:amt,outstanding:left,meters:+s.meters||0,commissionRate:+s.commissionRate||1.5});
   });
   return open;
 }
@@ -60,7 +81,7 @@ function simulatePaymentImpact(customerName,newAmount,data){
   let billsCleared=0,commissionGained=0,nextBillShortfall=0;
   for(const b of openBills){
     if(rem<=0)break;
-    if(rem>=b.outstanding){rem-=b.outstanding;billsCleared++;commissionGained+=b.meters*1.5;}
+    if(rem>=b.outstanding){rem-=b.outstanding;billsCleared++;commissionGained+=b.meters*b.commissionRate;}
     else{nextBillShortfall=b.outstanding-rem;rem=0;break;}
   }
   return{billsCleared,commissionGained,totalOpenBills:openBills.length,nextBillShortfall};
@@ -97,12 +118,13 @@ function computeDueBills(data){
 const SELLER_STATE="Delhi";
 const INDIA_STATES=["Delhi","Uttar Pradesh","Haryana","Punjab","Rajasthan","Gujarat","Maharashtra","Madhya Pradesh","Uttarakhand","Bihar","West Bengal","Tamil Nadu","Karnataka","Andhra Pradesh","Telangana","Kerala","Odisha","Chhattisgarh","Jharkhand","Assam","Himachal Pradesh","Jammu and Kashmir","Goa","Chandigarh","Puducherry","Other"];
 // Amount is treated as GST-INCLUSIVE. Splits it into taxable value + CGST/SGST (same state) or IGST (different state).
-function calcGST(amount,buyerState,gstRatePct){
+function calcGST(amount,buyerState,gstRatePct,sellerState){
+  const seller=sellerState||SELLER_STATE;
   const rate=(+gstRatePct||5);
   const amt=+amount||0;
   const taxable=amt/(1+rate/100);
   const gstAmt=amt-taxable;
-  const sameState=normName(buyerState||SELLER_STATE)===normName(SELLER_STATE);
+  const sameState=normName(buyerState||seller)===normName(seller);
   return{
     taxable,gstAmt,rate,sameState,
     cgst:sameState?gstAmt/2:0,
@@ -223,65 +245,117 @@ function getInvoiceLineItems(sale,allSales){
   const matched=allSales.filter(s=>s.customerName===sale.customerName&&(s.billNo||"").trim().toLowerCase()===b);
   return matched.length?matched:[sale];
 }
-function generateInvoice(sale,allSales,customer){
+function generateInvoice(sale,allSales,customer,companySettings){
+  const co=companySettings||{};
+  const sellerState=co.state||SELLER_STATE;
   const items=getInvoiceLineItems(sale,allSales);
-  const total=items.reduce((a,s)=>a+(+s.amount||0),0);
-  const totalQty=items.reduce((a,s)=>a+(+s.meters||0),0);
-  const buyerState=customer?.state||SELLER_STATE;
-  const gstBreak=items.reduce((acc,s)=>{
-    const g=calcGST(s.amount,buyerState,s.gstRate);
-    acc.taxable+=g.taxable;acc.cgst+=g.cgst;acc.sgst+=g.sgst;acc.igst+=g.igst;acc.rate=g.rate;acc.sameState=g.sameState;
-    return acc;
-  },{taxable:0,cgst:0,sgst:0,igst:0,rate:5,sameState:true});
-  const rows=items.map((s,i)=>`<tr><td>${i+1}</td><td>${s.productName||"—"}</td><td style="text-align:right">${fmt(s.meters)}</td><td style="text-align:right">₹${fmt(s.rate)}</td><td style="text-align:right">₹${fmt(s.amount)}</td></tr>`).join("");
-  const gstRows=gstBreak.sameState
-    ?`<tr><td colspan="4" style="text-align:right">CGST @ ${gstBreak.rate/2}%</td><td style="text-align:right">₹${fmt(gstBreak.cgst)}</td></tr>
-      <tr><td colspan="4" style="text-align:right">SGST @ ${gstBreak.rate/2}%</td><td style="text-align:right">₹${fmt(gstBreak.sgst)}</td></tr>`
-    :`<tr><td colspan="4" style="text-align:right">IGST @ ${gstBreak.rate}% (${buyerState})</td><td style="text-align:right">₹${fmt(gstBreak.igst)}</td></tr>`;
+  const buyerState=customer?.state||sellerState;
+
+  // Each line item's `amount` is the TOTAL (product + freight, GST-inclusive) as stored.
+  // Split it back into product-only vs freight, then back-calc taxable value for each.
+  const lines=items.map(s=>{
+    const freight=+s.freight||0;
+    const productOnly=(+s.amount||0)-freight;
+    const gp=calcGST(productOnly,buyerState,s.gstRate,sellerState);
+    const gf=calcGST(freight,buyerState,s.gstRate,sellerState);
+    const qty=+s.meters||0;
+    const rateBeforeGST=qty>0?gp.taxable/qty:0;
+    return{...s,freight,productOnly,gp,gf,qty,rateBeforeGST,lineTaxable:gp.taxable+gf.taxable,lineCgst:gp.cgst+gf.cgst,lineSgst:gp.sgst+gf.sgst,lineIgst:gp.igst+gf.igst};
+  });
+
+  const totalQty=lines.reduce((a,l)=>a+l.qty,0);
+  const totalFreight=lines.reduce((a,l)=>a+l.gf.taxable,0);
+  const totalProductTaxable=lines.reduce((a,l)=>a+l.gp.taxable,0);
+  const totalTaxable=lines.reduce((a,l)=>a+l.lineTaxable,0);
+  const totalCgst=lines.reduce((a,l)=>a+l.lineCgst,0);
+  const totalSgst=lines.reduce((a,l)=>a+l.lineSgst,0);
+  const totalIgst=lines.reduce((a,l)=>a+l.lineIgst,0);
+  const totalTax=totalCgst+totalSgst+totalIgst;
+  const grandTotal=totalTaxable+totalTax;
+  const sameState=lines[0]?lines[0].gp.sameState:true;
+  const rate=lines[0]?lines[0].gp.rate:5;
+
+  const rows=lines.map((l,i)=>`<tr>
+      <td>${i+1}</td>
+      <td>${l.productName||"—"}</td>
+      <td>${l.hsn||"—"}</td>
+      <td style="text-align:right">${fmt(l.qty)}</td>
+      <td>${l.unit||"Mtr"}</td>
+      <td style="text-align:right">₹${fmt(l.rateBeforeGST)}</td>
+      <td style="text-align:right">₹${fmt(l.gp.taxable)}</td>
+    </tr>`).join("");
+
+  const gstRows=sameState
+    ?`<tr><td colspan="6" style="text-align:right">CGST @ ${rate/2}%</td><td style="text-align:right">₹${fmt(totalCgst)}</td></tr>
+      <tr><td colspan="6" style="text-align:right">SGST @ ${rate/2}%</td><td style="text-align:right">₹${fmt(totalSgst)}</td></tr>`
+    :`<tr><td colspan="6" style="text-align:right">IGST @ ${rate}% (${buyerState})</td><td style="text-align:right">₹${fmt(totalIgst)}</td></tr>`;
+
+  const amountWords=`Rupees ${numberToWordsIndian(grandTotal)} Only`;
+
   const win=window.open("","_blank");
   win.document.write(`<!DOCTYPE html><html><head><title>Invoice ${sale.billNo||sale.id}</title><style>
-    body{font-family:Arial,sans-serif;font-size:13px;color:#111;padding:30px;max-width:800px;margin:auto;}
-    .hdr{display:flex;justify-content:space-between;align-items:flex-start;border-bottom:3px solid #0F1923;padding-bottom:16px;margin-bottom:20px;}
-    .co{font-size:24px;font-weight:900;color:#0F1923;}
-    .tag{font-size:11px;color:#666;margin-top:2px;}
-    .inv-title{font-size:20px;font-weight:800;color:#0F1923;text-align:right;}
-    .inv-meta{font-size:12px;color:#555;text-align:right;margin-top:4px;line-height:1.6;}
-    .parties{display:flex;justify-content:space-between;margin-bottom:24px;gap:20px;}
-    .party-box{flex:1;}
-    .party-label{font-size:10px;color:#888;text-transform:uppercase;letter-spacing:1px;font-weight:700;margin-bottom:4px;}
-    .party-name{font-size:15px;font-weight:800;color:#0F1923;}
-    .party-detail{font-size:12px;color:#555;margin-top:2px;}
-    table{width:100%;border-collapse:collapse;margin-top:10px;}
-    th{background:#0F1923;color:#E8C97E;padding:9px 10px;text-align:left;font-size:11.5px;}
-    td{padding:8px 10px;border-bottom:1px solid #eee;font-size:12.5px;}
-    tr:nth-child(even){background:#f9f9f9;}
-    .sub-row td{background:#F7F9FB;border:none;font-size:12px;}
-    .taxable-row td{border:none;font-size:12.5px;font-weight:700;border-top:1.5px solid #0F1923;}
-    .tot-row td{background:#0F1923;color:#E8C97E;font-weight:bold;border:none;font-size:14px;}
-    .footer{margin-top:40px;display:flex;justify-content:space-between;font-size:11px;color:#888;border-top:1px solid #eee;padding-top:16px;}
-    .sign-line{margin-top:50px;border-top:1px solid #333;padding-top:6px;font-size:11px;text-align:center;}
+    body{font-family:Arial,sans-serif;font-size:12.5px;color:#111;padding:26px;max-width:820px;margin:auto;}
+    .gstin-bar{display:flex;justify-content:space-between;font-size:11px;font-weight:700;border-bottom:1px solid #333;padding-bottom:6px;margin-bottom:6px;}
+    .hdr{text-align:center;border-bottom:2px solid #111;padding-bottom:10px;margin-bottom:10px;}
+    .inv-label{font-size:12px;text-decoration:underline;font-weight:700;}
+    .co{font-size:22px;font-weight:900;margin-top:2px;}
+    .addr{font-size:11.5px;color:#333;margin-top:2px;}
+    .meta-box{display:flex;border:1px solid #333;margin-bottom:8px;}
+    .meta-col{flex:1;padding:8px 12px;font-size:11.5px;line-height:1.7;}
+    .meta-col:first-child{border-right:1px solid #333;}
+    .parties{display:flex;border:1px solid #333;border-top:none;margin-bottom:0;}
+    .party-box{flex:1;padding:8px 12px;font-size:11.5px;line-height:1.6;}
+    .party-box:first-child{border-right:1px solid #333;}
+    .party-label{font-weight:800;font-style:italic;margin-bottom:3px;}
+    table{width:100%;border-collapse:collapse;}
+    th{background:#0F1923;color:#E8C97E;padding:7px 8px;text-align:left;font-size:10.5px;border:1px solid #333;}
+    td{padding:6px 8px;border:1px solid #ccc;font-size:11.5px;}
+    .sub-row td{border:1px solid #333;font-size:11.5px;}
+    .tot-row td{background:#0F1923;color:#E8C97E;font-weight:bold;border:1px solid #333;font-size:12.5px;}
+    .words-box{border:1px solid #333;border-top:none;padding:8px 12px;font-weight:700;font-size:12px;}
+    .taxtable td,.taxtable th{font-size:10.5px;padding:5px 8px;}
+    .bank-box{border:1px solid #333;border-top:none;padding:8px 12px;font-size:11.5px;}
+    .footer{display:flex;border:1px solid #333;border-top:none;}
+    .terms-box{flex:1;padding:8px 12px;font-size:10px;line-height:1.6;border-right:1px solid #333;}
+    .sign-box{flex:1;padding:8px 12px;font-size:11px;text-align:right;display:flex;flex-direction:column;justify-content:space-between;}
   </style></head><body>
+    <div class="gstin-bar"><span>GSTIN: ${co.gstin||"—"}</span><span>Original Copy</span></div>
     <div class="hdr">
-      <div><div class="co">Navkar Fabrics</div><div class="tag">Fabric Trading &amp; Indenting — Delhi</div></div>
-      <div><div class="inv-title">TAX INVOICE</div><div class="inv-meta">Invoice No: ${sale.billNo||"—"}<br/>Date: ${fmtD(sale.date)}<br/>${gstBreak.sameState?"Intra-state (CGST+SGST)":"Inter-state (IGST)"}</div></div>
+      <div class="inv-label">TAX INVOICE</div>
+      <div class="co">${co.name||"Navkar Fabrics"}</div>
+      ${co.address?`<div class="addr">${co.address}</div>`:""}
+      <div class="addr">${[co.phone?`Tel: ${co.phone}`:"",co.email?`Email: ${co.email}`:""].filter(Boolean).join("   ")}</div>
+    </div>
+    <div class="meta-box">
+      <div class="meta-col"><b>Invoice No.</b> : ${sale.billNo||"—"}<br/><b>Dated</b> : ${fmtD(sale.date)}<br/><b>Place of Supply</b> : ${buyerState}</div>
+      <div class="meta-col"><b>Reverse Charge</b> : N<br/><b>Transport</b> : By Road</div>
     </div>
     <div class="parties">
-      <div class="party-box"><div class="party-label">Bill To</div><div class="party-name">${sale.customerName}</div>
-        ${customer&&customer.phone?`<div class="party-detail">📞 ${customer.phone}</div>`:""}
-        ${customer&&customer.city?`<div class="party-detail">📍 ${customer.city}, ${buyerState}</div>`:`<div class="party-detail">📍 ${buyerState}</div>`}
-        ${customer&&customer.gstin?`<div class="party-detail">GSTIN: ${customer.gstin}</div>`:""}
+      <div class="party-box"><div class="party-label">Billed to :</div><b>${sale.customerName}</b><br/>
+        ${customer&&customer.city?`${customer.city}, ${buyerState}<br/>`:`${buyerState}<br/>`}
+        ${customer&&customer.gstin?`GSTIN/UIN : ${customer.gstin}`:""}
+      </div>
+      <div class="party-box"><div class="party-label">Shipped to :</div><b>${sale.customerName}</b><br/>
+        ${customer&&customer.city?`${customer.city}, ${buyerState}`:buyerState}
       </div>
     </div>
-    <table><thead><tr><th>#</th><th>Product</th><th style="text-align:right">Qty (m)</th><th style="text-align:right">Rate</th><th style="text-align:right">Amount</th></tr></thead>
+    <table><thead><tr>
+      <th>S.N.</th><th>Description of Goods</th><th>HSN/SAC</th><th style="text-align:right">Qty</th><th>Unit</th><th style="text-align:right">Rate (Before GST)</th><th style="text-align:right">Amount</th>
+    </tr></thead>
     <tbody>${rows}
-      <tr class="taxable-row"><td colspan="4" style="text-align:right">Taxable Value</td><td style="text-align:right">₹${fmt(gstBreak.taxable)}</td></tr>
+      ${totalFreight>0?`<tr class="sub-row"><td colspan="6" style="text-align:right">Freight / Coolie Cartage</td><td style="text-align:right">₹${fmt(totalFreight)}</td></tr>`:""}
+      <tr class="sub-row"><td colspan="6" style="text-align:right"><b>Taxable Amount</b></td><td style="text-align:right"><b>₹${fmt(totalTaxable)}</b></td></tr>
       ${gstRows}
-      <tr class="tot-row"><td colspan="4">GRAND TOTAL</td><td style="text-align:right">₹${fmt(total)}</td></tr>
+      <tr class="tot-row"><td colspan="6">Invoice Value (Qty: ${fmt(totalQty)})</td><td style="text-align:right">₹${fmt(grandTotal)}</td></tr>
     </tbody></table>
-    <div style="font-size:10.5px;color:#999;margin-top:6px;">Total Qty: ${fmt(totalQty)} m · Prices are GST-inclusive.</div>
+    <div class="words-box">${amountWords}</div>
+    <table class="taxtable"><thead><tr><th>Tax Rate</th><th style="text-align:right">Taxable Amt.</th>${sameState?`<th style="text-align:right">CGST</th><th style="text-align:right">SGST</th>`:`<th style="text-align:right">IGST</th>`}<th style="text-align:right">Total Tax</th></tr></thead>
+      <tbody><tr><td>${rate}%</td><td style="text-align:right">₹${fmt(totalTaxable)}</td>${sameState?`<td style="text-align:right">₹${fmt(totalCgst)}</td><td style="text-align:right">₹${fmt(totalSgst)}</td>`:`<td style="text-align:right">₹${fmt(totalIgst)}</td>`}<td style="text-align:right">₹${fmt(totalTax)}</td></tr></tbody>
+    </table>
+    ${(co.bankName||co.bankAccount)?`<div class="bank-box"><b>Bank Details :</b> ${co.bankName||""}${co.bankIFSC?`, IFSC: ${co.bankIFSC}`:""}${co.bankAccount?`<br/>A/c No: ${co.bankAccount}`:""}</div>`:""}
     <div class="footer">
-      <div>Thank you for your business.</div>
-      <div class="sign-line">Authorized Signatory</div>
+      <div class="terms-box"><b>Terms &amp; Conditions</b><br/>${(co.terms||"").split("\n").filter(Boolean).map(t=>t.replace(/^\d+\.\s*/,"")).map((t,i)=>`${i+1}. ${t}`).join("<br/>")}</div>
+      <div class="sign-box"><div>Receiver's Signature :</div><div><b>for ${co.name||"Navkar Fabrics"}</b><br/><br/>Authorised Signatory</div></div>
     </div>
     <script>window.onload=()=>{window.print();}<\/script>
   </body></html>`);
@@ -316,13 +390,13 @@ const TABS=[
   {id:"Dashboard",icon:"📊",label:"Dashboard"},
   {id:"Trading",icon:"🏪",label:"Entry"},
   {id:"Outstanding",icon:"⏳",label:"Outstanding"},
-  {id:"Ledger",icon:"📖",label:"Ledger"},
   {id:"Aging",icon:"📅",label:"Ageing"},
   {id:"Analytics",icon:"📈",label:"Analytics"},
   {id:"Commission",icon:"💰",label:"Commission"},
   {id:"Enquiry",icon:"📝",label:"Enquiry"},
   {id:"Masters",icon:"⚙️",label:"Masters"},
   {id:"Reports",icon:"📋",label:"Reports"},
+  {id:"Settings",icon:"🏢",label:"Settings"},
 ];
 
 function App({user}){
@@ -383,6 +457,10 @@ function App({user}){
   const handleLogout=()=>{
     if(!window.confirm("Log out of this account?\n\nYour data stays safely synced in the cloud — you'll just need to sign in again to see it here."))return;
     supabase.auth.signOut();
+  };
+  const updateCompanySettings=(updates)=>{
+    setData(p=>({...p,companySettings:{...p.companySettings,...updates}}));
+    showToast("Company settings saved.");
   };
 
   const[excelPreview,setExcelPreview]=useState(null);
@@ -512,7 +590,7 @@ function App({user}){
           <button onClick={handleBackupClick} style={hdrBtn()}><span style={{fontSize:18}}>☁️</span><span style={{fontSize:9}}>Backup</span></button>
           <button onClick={handleShareBackup} style={hdrBtn()}><span style={{fontSize:18}}>📤</span><span style={{fontSize:9}}>Share</span></button>
           <button onClick={()=>restoreRef.current&&restoreRef.current.click()} style={hdrBtn()}><span style={{fontSize:18}}>📂</span><span style={{fontSize:9}}>Restore</span></button>
-          <button onClick={handleLogout} style={{...hdrBtn(),minWidth:44,background:"rgba(231,76,60,0.18)"}}><span style={{fontSize:18}}>🚪</span></button>
+          <button onClick={handleLogout} style={{...hdrBtn(),background:"rgba(231,76,60,0.18)"}}><span style={{fontSize:18}}>🚪</span><span style={{fontSize:9}}>Log Out</span></button>
         </div>
       </div>
       <div className="mob" style={{display:"none",background:C.navy,padding:"0 16px 10px"}}>
@@ -525,13 +603,13 @@ function App({user}){
         {tab==="Dashboard"  &&<DashboardTab data={data} tots={{totTradingSale,totTradingPaid,totTradingOut,totComm}} onNav={id=>navigateTab(id)} tradingOut={tradingOut} lastBackupAt={lastBackupAt} onShareBackup={handleShareBackup}/>}
         {tab==="Trading"    &&<TradingTab data={data} onAdd={()=>setModal({type:"sale"})} onAddPay={()=>setModal({type:"payment"})} onAddDebit={()=>setModal({type:"debit"})} onAddCredit={()=>setModal({type:"credit"})} onDel={del} onEdit={(type,rec)=>setModal({type:`edit-${type}`,rec})} tradingOut={tradingOut} initialSearch={navHint?.search} initialView={navHint?.view}/>}
         {tab==="Outstanding"&&<OutstandingTab tradingOut={tradingOut} data={data} onAddPay={(pre)=>setModal({type:"payment",preCustomer:pre})} generatePDF={generatePDF}/>}
-        {tab==="Ledger"     &&<LedgerTab data={data} generatePDF={generatePDF} initialCustomer={navHint?.customer}/>}
         {tab==="Aging"      &&<AgingTab data={data} generatePDF={generatePDF}/>}
         {tab==="Analytics"  &&<AnalyticsTab data={data} tradingOut={tradingOut}/>}
         {tab==="Commission" &&<CommissionTab data={data} generatePDF={generatePDF}/>}
         {tab==="Enquiry"    &&<EnquiryTab data={data} onAdd={r=>add("enquiries",r)} onUpdate={r=>{setData(p=>({...p,enquiries:p.enquiries.map(e=>e.id===r.id?r:e)}));showToast("Updated.");}} onDel={id=>del("enquiries",id)}/>}
         {tab==="Masters"    &&<MastersTab data={data} onAdd={setModal} onDel={del} onEdit={(type,rec)=>setModal({type:`edit-${type}`,rec})} onImportExcel={()=>importRef.current&&importRef.current.click()} trash={data.trash||[]} onRestore={restoreTrash} onPermanentDelete={permanentDeleteTrash} onEmptyTrash={emptyTrash} initialSearch={navHint?.search} initialView={navHint?.view}/>}
-        {tab==="Reports"    &&<ReportsTab data={data} tradingOut={tradingOut} tots={{totTradingSale,totTradingPaid,totTradingOut,totComm}} generatePDF={generatePDF}/>}
+        {tab==="Reports"    &&<ReportsTab data={data} tradingOut={tradingOut} tots={{totTradingSale,totTradingPaid,totTradingOut,totComm}} generatePDF={generatePDF} onAddPay={(pre)=>setModal({type:"payment",preCustomer:pre})}/>}
+        {tab==="Settings"   &&<SettingsTab data={data} onSave={updateCompanySettings}/>}
       </div>
       {modal?.type==="sale"          &&<SaleModal    data={data} onSave={r=>add("tradingSales",r)}    onClose={()=>setModal(null)}/>}
       {modal?.type==="payment"       &&<PaymentModal data={data} onSave={r=>add("tradingPayments",r)} onClose={()=>setModal(null)} preCustomer={modal.preCustomer}/>}
@@ -576,7 +654,8 @@ function DashboardTab({data,tots,onNav,tradingOut,lastBackupAt,onShareBackup}){
   const dueWeekList=dueBills.filter(b=>b.daysUntilDue>=2&&b.daysUntilDue<=7);
   const urgentList=[...overdueList,...dueTodayList,...dueTomorrowList].slice(0,6);
   const dueStatusText=(b)=>b.daysUntilDue<0?`overdue by ${-b.daysUntilDue}d`:b.daysUntilDue===0?"due today":b.daysUntilDue===1?"due tomorrow":`due in ${b.daysUntilDue}d`;
-  const buildDueWA=(b)=>`🏢 *Navkar Fabrics*\n\nDear *${b.customerName}*,\n\nReminder: Payment of ₹${fmt(b.amount)} for Bill No ${b.billNo} (dated ${fmtD(b.date)}) is ${dueStatusText(b)}.\n\nKindly arrange payment at the earliest.\n\nRegards\nNavkar Fabrics`;
+  const coName=data.companySettings?.name||"Navkar Fabrics";
+  const buildDueWA=(b)=>`🏢 *${coName}*\n\nDear *${b.customerName}*,\n\nReminder: Payment of ₹${fmt(b.amount)} for Bill No ${b.billNo} (dated ${fmtD(b.date)}) is ${dueStatusText(b)}.\n\nKindly arrange payment at the earliest.\n\nRegards\n${coName}`;
 
   return(<div>
     {backupOverdue&&<div style={{background:"#FEF6E7",border:"1px solid #F5D397",borderRadius:14,padding:"13px 15px",marginBottom:16,display:"flex",alignItems:"center",gap:10,flexWrap:"wrap"}}>
@@ -669,7 +748,7 @@ function TradingTab({data,onAdd,onAddPay,onAddDebit,onAddCredit,onDel,onEdit,ini
         <Mute>{s.productName} · {s.supplierName}</Mute>
         <Mute>{fmt(s.meters)} m @ ₹{fmt(s.rate)}/m · {fmtD(s.date)}</Mute>
         <div style={{display:"flex",gap:8,marginTop:8,flexWrap:"wrap"}}>
-          <button onClick={()=>generateInvoice(s,data.tradingSales,data.customers.find(c=>c.name===s.customerName))} style={{background:"#FEF6E7",color:"#9A7B1E",border:"none",borderRadius:8,padding:"7px 14px",fontSize:12,fontWeight:700,cursor:"pointer"}}>🧾 Invoice</button>
+          <button onClick={()=>generateInvoice(s,data.tradingSales,data.customers.find(c=>c.name===s.customerName),data.companySettings)} style={{background:"#FEF6E7",color:"#9A7B1E",border:"none",borderRadius:8,padding:"7px 14px",fontSize:12,fontWeight:700,cursor:"pointer"}}>🧾 Invoice</button>
           <button onClick={()=>onEdit("sale",s)} style={{background:"#EAF4FC",color:C.blue,border:"none",borderRadius:8,padding:"7px 14px",fontSize:12,fontWeight:700,cursor:"pointer"}}>✏️ Edit</button>
           <button onClick={()=>onDel("tradingSales",s.id)} style={{background:"#FEE8E8",color:C.red,border:"none",borderRadius:8,padding:"7px 14px",fontSize:12,fontWeight:700,cursor:"pointer"}}>🗑️ Delete</button>
         </div>
@@ -770,7 +849,7 @@ function OutstandingTab({tradingOut,data,onAddPay,generatePDF}){
       const billNoClean=String(b.billNo).replace(/IMP-/i,"");
       return `${nums[i]||`${i+1}.`} Bill No: ${billNoClean}\n   Date: ${fmtBillDate(b.date)}\n   O/S: *₹${fmtAmt(b.outstanding)}*\n   Age: ${b.days} Days`;
     }).join("\n\n");
-    return `🏢 *Navkar Fabrics*\n\nDear *${v.name}*,\n\nOutstanding payment reminder:\n\n${billLines}\n\n💰 *Total O/S: ₹${fmtAmt(v.net)}*\n\nKindly ignore if already paid.\n\nRegards\nNavkar Fabrics`;
+    return `🏢 *${data.companySettings?.name||"Navkar Fabrics"}*\n\nDear *${v.name}*,\n\nOutstanding payment reminder:\n\n${billLines}\n\n💰 *Total O/S: ₹${fmtAmt(v.net)}*\n\nKindly ignore if already paid.\n\nRegards\n${data.companySettings?.name||"Navkar Fabrics"}`;
   };
 
   const doPDF=()=>{
@@ -984,7 +1063,7 @@ function LedgerTab({data,generatePDF,initialCustomer}){
 
   const buildWA=()=>{
     const lines=filteredEntries.slice(-10).map(r=>`${fmtD(r.date)} — ${r.type}${r.ref&&r.ref!=="—"?" ("+r.ref+")":""}: ${r.debit?"+₹"+fmt(r.debit):"-₹"+fmt(r.credit)}`).join("\n");
-    return `🏢 *Navkar Fabrics*\n\nDear *${selectedCustomer}*,\n\nStatement of Account (last ${Math.min(10,filteredEntries.length)} entries):\n\n${lines}\n\n💰 *Closing Balance: ₹${fmt(closingBalance)}*\n\nRegards\nNavkar Fabrics`;
+    return `🏢 *${data.companySettings?.name||"Navkar Fabrics"}*\n\nDear *${selectedCustomer}*,\n\nStatement of Account (last ${Math.min(10,filteredEntries.length)} entries):\n\n${lines}\n\n💰 *Closing Balance: ₹${fmt(closingBalance)}*\n\nRegards\n${data.companySettings?.name||"Navkar Fabrics"}`;
   };
 
   // ── Customer picker screen — search-first, nothing listed until you type ──
@@ -1695,7 +1774,8 @@ function EnquiryTab({data,onAdd,onUpdate,onDel}){
 
   const buildWAEnquiry=(enq)=>{
     const phone=data.customers.find(c=>c.name===enq.customerName)?.phone||"";
-    const msg=`🏢 *Navkar Fabrics*\n\nDear *${enq.customerName}*,\n\nThis is a follow-up regarding:\n\n📋 *${enq.description}*\n\nEnquiry Date: ${fmtD(enq.enquiryDate)}${enq.submissionDate?`\nSubmission Date: ${fmtD(enq.submissionDate)}`:""}\n\nKindly revert at the earliest.\n\nRegards\nNavkar Fabrics`;
+    const coName=data.companySettings?.name||"Navkar Fabrics";
+    const msg=`🏢 *${coName}*\n\nDear *${enq.customerName}*,\n\nThis is a follow-up regarding:\n\n📋 *${enq.description}*\n\nEnquiry Date: ${fmtD(enq.enquiryDate)}${enq.submissionDate?`\nSubmission Date: ${fmtD(enq.submissionDate)}`:""}\n\nKindly revert at the earliest.\n\nRegards\n${coName}`;
     const n=phone?"91"+String(phone).replace(/\D/g,"").slice(-10):"";
     window.open(`https://wa.me/${n}?text=${encodeURIComponent(msg)}`,"_blank");
   };
@@ -1842,7 +1922,7 @@ function calcFIFOCommission(tradingSales,tradingPayments,creditNotes=[],debitNot
       const qty=+sale.meters||+sale.qty||0;
       if(remainingPayment>=saleAmt&&saleAmt>0){
         remainingPayment-=saleAmt;
-        const comm=qty*1.5;
+        const comm=qty*(+sale.commissionRate||1.5);
         if(comm>0){
           totalCommission+=comm;
           commDetails.push({customer:cname,date:sale.date,billNo:sale.billNo||"—",qty,amount:saleAmt,commission:comm});
@@ -2013,6 +2093,7 @@ function MastersTab({data,onAdd,onDel,onEdit,onImportExcel,trash,onRestore,onPer
       {products.map(p=>(<div key={p.id} style={{background:C.card,borderRadius:13,padding:"13px 15px",marginBottom:10,boxShadow:"0 1px 8px rgba(0,0,0,0.06)"}}>
         <Row><B>{p.name}</B><span style={{fontSize:11,color:C.muted}}>{p.unit}</span></Row>
         {p.supplierName&&<Mute>{p.supplierName}</Mute>}
+        <Mute>{p.hsn?`HSN: ${p.hsn} · `:""}GST: {p.gstRate||"5"}% · Comm: ₹{p.commissionRate||"1.5"}/m</Mute>
         <div style={{display:"flex",gap:8,marginTop:10}}>
           <button onClick={()=>onEdit("product",p)} style={{background:"#EAF4FC",color:C.blue,border:"none",borderRadius:8,padding:"7px 14px",fontSize:12,fontWeight:700,cursor:"pointer"}}>Edit</button>
           <button onClick={()=>onDel("products",p.id)} style={{background:"#FEE8E8",color:C.red,border:"none",borderRadius:8,padding:"7px 14px",fontSize:12,fontWeight:700,cursor:"pointer"}}>Delete</button>
@@ -2042,29 +2123,47 @@ function MastersTab({data,onAdd,onDel,onEdit,onImportExcel,trash,onRestore,onPer
 }
 
 // ─── REPORTS TAB ─────────────────────────────────────────────────
-function ReportsTab({data,tradingOut,tots,generatePDF}){
+function ReportsTab({data,tradingOut,tots,generatePDF,onAddPay}){
   const[rep,setRep]=useState("sales");
   const[fy,setFY]=useState(ALL_FY);
+  const[customFrom,setCustomFrom]=useState("");
+  const[customTo,setCustomTo]=useState("");
+  const useCustomRange=!!(customFrom&&customTo);
   const todayMs=new Date().setHours(0,0,0,0);
   const allFYs=useMemo(()=>getAvailableFYs(data.tradingSales),[data]);
 
-  const filteredSales=useMemo(()=>filterByFY(data.tradingSales,fy),[data,fy]);
+  const inCustomRange=(dateStr)=>{
+    const d=new Date(dateStr).setHours(0,0,0,0);
+    return d>=new Date(customFrom).setHours(0,0,0,0)&&d<=new Date(customTo).setHours(0,0,0,0);
+  };
+  const filteredSales=useMemo(()=>{
+    if(useCustomRange)return data.tradingSales.filter(s=>inCustomRange(s.date));
+    return filterByFY(data.tradingSales,fy);
+  },[data,fy,customFrom,customTo]);
   const filteredPay=useMemo(()=>{
+    if(useCustomRange)return data.tradingPayments.filter(p=>inCustomRange(p.date));
     if(fy===ALL_FY)return data.tradingPayments;
     const{start,end}=getFYRange(fy);
     return data.tradingPayments.filter(p=>{const d=new Date(p.date);return d>=start&&d<=end;});
-  },[data,fy]);
+  },[data,fy,customFrom,customTo]);
 
   const FYPicker=()=>(
     <div style={{marginBottom:12}}>
-      <div style={{fontSize:10.5,color:C.muted,fontWeight:600,marginBottom:5,textTransform:"uppercase"}}>Filter by FY</div>
-      <div style={{display:"flex",overflowX:"auto",gap:5,scrollbarWidth:"none"}}>
+      <div style={{fontSize:10.5,color:C.muted,fontWeight:600,marginBottom:5,textTransform:"uppercase"}}>Filter by Date</div>
+      <div style={{display:"flex",overflowX:"auto",gap:5,scrollbarWidth:"none",marginBottom:customFrom||customTo?8:0}}>
         {allFYs.map(f=>(
-          <button key={f} onClick={()=>setFY(f)} style={{flex:"0 0 auto",padding:"7px 12px",borderRadius:16,fontSize:11.5,fontWeight:fy===f?700:500,border:`1.5px solid ${fy===f?C.navy:C.border}`,background:fy===f?C.navy:"#fff",color:fy===f?C.gold:"#666",cursor:"pointer",whiteSpace:"nowrap"}}>
+          <button key={f} onClick={()=>{setFY(f);setCustomFrom("");setCustomTo("");}} style={{flex:"0 0 auto",padding:"7px 12px",borderRadius:16,fontSize:11.5,fontWeight:!useCustomRange&&fy===f?700:500,border:`1.5px solid ${!useCustomRange&&fy===f?C.navy:C.border}`,background:!useCustomRange&&fy===f?C.navy:"#fff",color:!useCustomRange&&fy===f?C.gold:"#666",cursor:"pointer",whiteSpace:"nowrap"}}>
             {f===ALL_FY?"All":f}
           </button>
         ))}
+        <button onClick={()=>{if(!customFrom)setCustomFrom(today());if(!customTo)setCustomTo(today());}} style={{flex:"0 0 auto",padding:"7px 12px",borderRadius:16,fontSize:11.5,fontWeight:useCustomRange?700:500,border:`1.5px solid ${useCustomRange?C.navy:C.border}`,background:useCustomRange?C.navy:"#fff",color:useCustomRange?C.gold:"#666",cursor:"pointer",whiteSpace:"nowrap"}}>📅 Custom Range</button>
       </div>
+      {(customFrom||customTo||useCustomRange)&&<div style={{display:"flex",gap:8,alignItems:"center"}}>
+        <input type="date" value={customFrom} onChange={e=>setCustomFrom(e.target.value)} style={{...IS,padding:"8px 10px",fontSize:12.5}}/>
+        <span style={{fontSize:11,color:C.muted}}>to</span>
+        <input type="date" value={customTo} onChange={e=>setCustomTo(e.target.value)} style={{...IS,padding:"8px 10px",fontSize:12.5}}/>
+        <button onClick={()=>{setCustomFrom("");setCustomTo("");}} style={{background:"#F0F4F8",border:"none",borderRadius:8,padding:"8px 10px",fontSize:11,color:C.muted,cursor:"pointer",flexShrink:0}}>✕</button>
+      </div>}
     </div>
   );
 
@@ -2098,44 +2197,12 @@ function ReportsTab({data,tradingOut,tots,generatePDF}){
     }
   };
 
-  // Outstanding is always current — no FY filter (it's live balance)
-  const outEntries=useMemo(()=>Object.values(tradingOut).map(v=>{
-    const net=Math.max(0,v.due+(v.debit||0)-v.paid-(v.credit||0));
-    const custSales=data.tradingSales.filter(s=>s.customerName===v.name).sort((a,b)=>new Date(a.date)-new Date(b.date));
-    let rem=v.paid+(v.credit||0);const openBills=[];
-    custSales.forEach(s=>{const amt=+s.amount||0;const d=Math.min(amt,rem);rem-=d;const left=amt-d;
-      if(left>0){const days=Math.floor((todayMs-new Date(s.date).setHours(0,0,0,0))/86400000);
-        openBills.push({billNo:s.billNo||"—",date:s.date,billAmount:amt,outstanding:left,days,productName:s.productName,meters:+s.meters||0,rate:+s.rate||0});}
-    });
-    return{name:v.name,net,openBills};
-  }).filter(v=>v.net>0).sort((a,b)=>b.net-a.net),[data,tradingOut]);
-
-  const doPDFOut=()=>{
-    const partyBlocks=outEntries.map(v=>{
-      const credit=v.openBills.map(b=>Math.max(0,b.billAmount-b.outstanding));
-      const rows=v.openBills.map((b,i)=>`<tr><td>${fmtD(b.date)}</td><td>${b.billNo}</td><td style="text-align:right">₹${fmt(b.billAmount)}</td><td style="text-align:right">₹${fmt(credit[i])}</td><td style="text-align:right;color:#E74C3C;font-weight:bold">₹${fmt(b.outstanding)}</td><td style="text-align:right">${b.days}</td></tr>`).join("");
-      return `<div class="party"><div class="party-name">Party : ${v.name}</div>
-        <table><thead><tr><th>Bill Date</th><th>Bill No</th><th style="text-align:right">Amount</th><th style="text-align:right">Credit</th><th style="text-align:right">Outstanding</th><th style="text-align:right">Days</th></tr></thead>
-        <tbody>${rows}<tr class="party-tot"><td colspan="4">Party Total</td><td style="text-align:right">₹${fmt(v.net)}</td><td></td></tr></tbody></table></div>`;
-    }).join("");
-    const style=`<style>.party{margin-bottom:22px;page-break-inside:avoid;}.party-name{font-weight:800;font-size:14px;color:#0F1923;margin-bottom:6px;padding-bottom:4px;border-bottom:1.5px solid #0F1923;}.party-tot td{background:#F0F4F8;font-weight:bold;border-top:1.5px solid #0F1923;}table th,table td{border:1px solid #ddd;}</style>`;
-    generatePDF("Outstanding Statement",`${style}${partyBlocks}<div class="tot" style="display:flex;justify-content:space-between;background:#0F1923;color:#E8C97E;padding:12px 16px;border-radius:6px;font-weight:bold;font-size:15px;margin-top:10px;"><span>TOTAL OUTSTANDING</span><span>₹${fmt(tots.totTradingOut)}</span></div>`);
-  };
-
-  const{totalCommission,commByCustomer}=useMemo(()=>calcFIFOCommission(filteredSales,filteredPay,data.creditNotes||[],data.debitNotes||[]),[filteredSales,filteredPay]);
-  const commList=Object.values(commByCustomer).sort((a,b)=>b.commission-a.commission);
-  const doPDFComm=()=>{
-    const pdfStyle=`<style>table{width:100%;border-collapse:collapse;}th{background:#0F1923;color:#E8C97E;padding:8px 10px;text-align:left;font-size:12px;border:1px solid #0F1923;}td{padding:7px 10px;border:1px solid #ddd;font-size:12px;}tr:nth-child(even){background:#f9f9f9;}.tot td{background:#0F1923;color:#E8C97E;font-weight:bold;border:none;}</style>`;
-    const rows=commList.map((v,i)=>`<tr><td style="text-align:center">${i+1}</td><td>${v.name}</td><td style="text-align:right">${v.bills}</td><td style="text-align:right">${fmt(v.meters)} m</td><td style="text-align:right;color:#8E44AD;font-weight:bold">₹${fmt(v.commission)}</td></tr>`).join("");
-    generatePDF(`Commission Statement${fy!==ALL_FY?" — FY "+fy:""}`,`${pdfStyle}<table><thead><tr><th style="text-align:center">#</th><th>Customer</th><th style="text-align:right">Bills Cleared</th><th style="text-align:right">Meters</th><th style="text-align:right">Commission</th></tr></thead><tbody>${rows}<tr class="tot"><td colspan="4" style="text-align:right">TOTAL</td><td style="text-align:right">₹${fmt(totalCommission)}</td></tr></tbody></table>`);
-  };
-
   const totSales=salesRows.reduce((a,s)=>a+(+s.amount||0),0);
   const totQty=salesRows.reduce((a,s)=>a+(+s.meters||0),0);
 
   return(<div>
     <div style={{display:"flex",overflowX:"auto",gap:8,marginBottom:12,scrollbarWidth:"none"}}>
-      {[{v:"sales",l:"Sales Register"},{v:"outstanding",l:"Outstanding"},{v:"commission",l:"Commission"},{v:"ledger",l:"Ledger"}].map(r=>(<button key={r.v} onClick={()=>setRep(r.v)} style={{flex:"0 0 auto",padding:"10px 16px",borderRadius:20,fontSize:13,fontWeight:rep===r.v?700:500,border:`1.5px solid ${rep===r.v?C.navy:C.border}`,background:rep===r.v?C.navy:"#fff",color:rep===r.v?C.gold:"#666",cursor:"pointer",minHeight:42}}>{r.l}</button>))}
+      {[{v:"sales",l:"Sales Register"},{v:"outstanding",l:"Outstanding"},{v:"commission",l:"Commission"},{v:"ageing",l:"Ageing"},{v:"ledger",l:"Ledger"}].map(r=>(<button key={r.v} onClick={()=>setRep(r.v)} style={{flex:"0 0 auto",padding:"10px 16px",borderRadius:20,fontSize:13,fontWeight:rep===r.v?700:500,border:`1.5px solid ${rep===r.v?C.navy:C.border}`,background:rep===r.v?C.navy:"#fff",color:rep===r.v?C.gold:"#666",cursor:"pointer",minHeight:42}}>{r.l}</button>))}
     </div>
 
     {rep==="sales"&&<>
@@ -2247,79 +2314,11 @@ function ReportsTab({data,tradingOut,tots,generatePDF}){
       })()}
     </>}
 
-    {rep==="outstanding"&&<>
-      <div style={{background:"#FFF8E7",borderRadius:10,padding:"10px 13px",marginBottom:12,fontSize:12,color:"#7D6608",border:"1px solid #F9E79F"}}>
-        📌 Outstanding is always current (live balance). FY filter does not apply here.
-      </div>
-      <div style={{display:"flex",gap:8,marginBottom:10}}>
-        <button onClick={()=>exportCSV([["Customer","Bill Date","Bill No","Product","Qty","Bill Amt","Outstanding","Days"],...outEntries.flatMap(v=>v.openBills.map(b=>[v.name,fmtD(b.date),b.billNo,b.productName,b.meters,b.billAmount,b.outstanding,b.days]))],`Outstanding_${today()}.csv`)} style={{background:C.green,color:"#fff",border:"none",borderRadius:9,padding:"9px 15px",fontSize:12.5,fontWeight:700,cursor:"pointer",minHeight:40}}>📥 CSV</button>
-        <button onClick={doPDFOut} style={{background:C.red,color:"#fff",border:"none",borderRadius:9,padding:"9px 15px",fontSize:12.5,fontWeight:700,cursor:"pointer",minHeight:40}}>🖨️ PDF</button>
-      </div>
-      <div style={{background:C.card,borderRadius:12,padding:14,marginBottom:12,borderLeft:`4px solid ${C.red}`}}>
-        <Mute>Total Outstanding ({outEntries.length} customers)</Mute>
-        <div style={{fontSize:22,fontWeight:900,color:C.red}}>₹{fmt(tots.totTradingOut)}</div>
-      </div>
-      {outEntries.map(v=>(
-        <div key={v.name} style={{background:C.card,borderRadius:13,padding:"0",marginBottom:12,boxShadow:"0 1px 8px rgba(0,0,0,0.07)",overflow:"hidden"}}>
-          <div style={{background:`linear-gradient(90deg,${C.navyMid},${C.navy})`,padding:"11px 14px",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
-            <B style={{color:"#fff",fontSize:13}}>{v.name}</B>
-            <span style={{fontWeight:900,color:C.gold,fontSize:14}}>₹{fmt(v.net)}</span>
-          </div>
-          {v.openBills.map((b,i)=>{
-            const col=b.days<=30?C.green:b.days<=60?C.orange:b.days<=90?"#E67E22":C.red;
-            return(
-              <div key={i} style={{padding:"10px 14px",borderBottom:`1px solid ${C.border}`,background:i%2===0?"#fff":"#FAFBFC"}}>
-                <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start"}}>
-                  <div style={{flex:1}}>
-                    <div style={{display:"flex",gap:8,alignItems:"center",flexWrap:"wrap"}}>
-                      <span style={{fontSize:12.5,fontWeight:700,color:C.navy}}>{b.billNo}</span>
-                      <span style={{fontSize:11,color:C.muted}}>📅 {fmtD(b.date)}</span>
-                      <span style={{fontSize:11,color:col,fontWeight:700}}>⏱ {b.days}d</span>
-                    </div>
-                    {b.productName&&<div style={{fontSize:11.5,color:C.teal,marginTop:3}}>📦 {b.productName}</div>}
-                    {b.meters>0&&<div style={{fontSize:11.5,color:C.muted}}>📏 {fmt(b.meters)} m {b.rate>0?`@ ₹${fmt(b.rate)}/m`:""}</div>}
-                    <div style={{fontSize:11.5,color:C.muted}}>Bill Amt: ₹{fmt(b.billAmount)}</div>
-                  </div>
-                  <div style={{textAlign:"right",minWidth:90}}>
-                    <div style={{fontWeight:900,fontSize:14,color:C.red}}>₹{fmt(b.outstanding)}</div>
-                    <div style={{fontSize:10,color:col,fontWeight:600}}>O/S</div>
-                  </div>
-                </div>
-              </div>
-            );
-          })}
-        </div>
-      ))}
-    </>}
+    {rep==="outstanding"&&<OutstandingTab tradingOut={tradingOut} data={data} onAddPay={onAddPay} generatePDF={generatePDF}/>}
 
-    {rep==="commission"&&<>
-      <FYPicker/>
-      <div style={{display:"flex",gap:8,marginBottom:10}}>
-        <button onClick={()=>exportCSV([["#","Customer","Bills","Meters","Commission"],...commList.map((v,i)=>[i+1,v.name,v.bills,v.meters,v.commission])],`Commission_${fy.replace(/[^0-9\-]/g,"")}_${today()}.csv`)} style={{background:C.green,color:"#fff",border:"none",borderRadius:9,padding:"9px 15px",fontSize:12.5,fontWeight:700,cursor:"pointer",minHeight:40}}>📥 CSV</button>
-        <button onClick={doPDFComm} style={{background:C.red,color:"#fff",border:"none",borderRadius:9,padding:"9px 15px",fontSize:12.5,fontWeight:700,cursor:"pointer",minHeight:40}}>🖨️ PDF</button>
-      </div>
-      <div style={{background:C.card,borderRadius:12,padding:14,marginBottom:12,borderLeft:`4px solid ${C.purple}`}}>
-        <Mute>Commission {fy!==ALL_FY?`— FY ${fy}`:""} (FIFO)</Mute>
-        <div style={{fontSize:22,fontWeight:900,color:C.purple}}>₹{fmt(totalCommission)}</div>
-      </div>
-      {commList.length===0&&<Empty text="No commission for this period."/>}
-      {commList.map((v,i)=>(
-        <div key={v.name} style={{background:C.card,borderRadius:11,padding:"12px 14px",marginBottom:8,boxShadow:"0 1px 6px rgba(0,0,0,0.05)",borderLeft:`3px solid ${C.purple}`}}>
-          <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start"}}>
-            <div>
-              <B style={{fontSize:13.5}}>{v.name}</B>
-              <Mute>📄 {v.bills} bills fully adjusted</Mute>
-              <Mute>📏 {fmt(v.meters)} m @ ₹1.50</Mute>
-            </div>
-            <span style={{fontWeight:900,color:C.purple,fontSize:15}}>₹{fmt(v.commission)}</span>
-          </div>
-        </div>
-      ))}
-      {commList.length>0&&<div style={{background:C.navy,borderRadius:12,padding:"14px 16px",marginTop:8,display:"flex",justifyContent:"space-between"}}>
-        <span style={{fontWeight:700,color:C.gold}}>TOTAL</span>
-        <span style={{fontWeight:900,fontSize:16,color:C.gold}}>₹{fmt(totalCommission)}</span>
-      </div>}
-    </>}
+    {rep==="commission"&&<CommissionTab data={data} generatePDF={generatePDF}/>}
+
+    {rep==="ageing"&&<AgingTab data={data} generatePDF={generatePDF}/>}
 
     {rep==="ledger"&&<LedgerTab data={data} generatePDF={generatePDF}/>}
   </div>);
@@ -2368,6 +2367,56 @@ function GlobalSearchModal({data,onClose,onSelect}){
         ))}
       </div>
     </div>
+  </div>);
+}
+
+// ─── SETTINGS TAB (Company Settings) ────────────────────────────
+function SettingsTab({data,onSave}){
+  const co=data.companySettings||{};
+  const[f,sf]=useState({
+    name:co.name||"Navkar Fabrics",address:co.address||"",gstin:co.gstin||"",phone:co.phone||"",email:co.email||"",
+    state:co.state||"Delhi",bankName:co.bankName||"",bankAccount:co.bankAccount||"",bankIFSC:co.bankIFSC||"",
+    terms:co.terms||"",
+  });
+  const s=(k,v)=>sf(p=>({...p,[k]:v}));
+  const dirty=JSON.stringify(f)!==JSON.stringify({name:co.name||"Navkar Fabrics",address:co.address||"",gstin:co.gstin||"",phone:co.phone||"",email:co.email||"",state:co.state||"Delhi",bankName:co.bankName||"",bankAccount:co.bankAccount||"",bankIFSC:co.bankIFSC||"",terms:co.terms||""});
+  return(<div>
+    <SecTitle>🏢 Company Settings</SecTitle>
+    <div style={{background:"#FEF9E7",borderRadius:10,padding:"10px 13px",marginBottom:16,fontSize:12,color:"#7D6608",border:"1px solid #F9E79F"}}>
+      These details appear on every Invoice, Report header, and WhatsApp message sent from the app.
+    </div>
+
+    <div style={{background:C.card,borderRadius:14,padding:16,marginBottom:16,boxShadow:"0 1px 8px rgba(0,0,0,0.06)"}}>
+      <div style={{fontWeight:800,fontSize:14,color:C.navy,marginBottom:12}}>Business Details</div>
+      <F label="Company Name *"><input value={f.name} onChange={e=>s("name",e.target.value)} placeholder="Navkar Fabrics" style={IS}/></F>
+      <F label="Address"><textarea value={f.address} onChange={e=>s("address",e.target.value)} placeholder="Full business address" style={{...IS,minHeight:60,resize:"vertical"}}/></F>
+      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}>
+        <F label="Phone"><input value={f.phone} onChange={e=>s("phone",e.target.value)} placeholder="9911112105" style={IS}/></F>
+        <F label="Email"><input value={f.email} onChange={e=>s("email",e.target.value)} placeholder="you@example.com" style={IS}/></F>
+      </div>
+      <F label="GSTIN"><input value={f.gstin} onChange={e=>s("gstin",e.target.value)} placeholder="09AARPJ1728P1ZZ" style={IS}/></F>
+      <F label="State (for GST — determines CGST+SGST vs IGST on every invoice)">
+        <select value={f.state} onChange={e=>s("state",e.target.value)} style={IS}>
+          {INDIA_STATES.map(st=><option key={st} value={st}>{st}</option>)}
+        </select>
+      </F>
+    </div>
+
+    <div style={{background:C.card,borderRadius:14,padding:16,marginBottom:16,boxShadow:"0 1px 8px rgba(0,0,0,0.06)"}}>
+      <div style={{fontWeight:800,fontSize:14,color:C.navy,marginBottom:12}}>Bank Details (shown on invoices)</div>
+      <F label="Bank Name"><input value={f.bankName} onChange={e=>s("bankName",e.target.value)} placeholder="Canara Bank" style={IS}/></F>
+      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}>
+        <F label="Account No."><input value={f.bankAccount} onChange={e=>s("bankAccount",e.target.value)} placeholder="3768201000242" style={IS}/></F>
+        <F label="IFSC"><input value={f.bankIFSC} onChange={e=>s("bankIFSC",e.target.value)} placeholder="CNRB0003768" style={IS}/></F>
+      </div>
+    </div>
+
+    <div style={{background:C.card,borderRadius:14,padding:16,marginBottom:16,boxShadow:"0 1px 8px rgba(0,0,0,0.06)"}}>
+      <div style={{fontWeight:800,fontSize:14,color:C.navy,marginBottom:12}}>Terms &amp; Conditions (one per line, shown on invoices)</div>
+      <F label=""><textarea value={f.terms} onChange={e=>s("terms",e.target.value)} placeholder={"Goods once sold will not be taken back.\nInterest @ 18% p.a. will be charged if payment is delayed.\nSubject to Delhi jurisdiction only."} style={{...IS,minHeight:90,resize:"vertical"}}/></F>
+    </div>
+
+    <SaveBtn color={dirty?C.navy:C.muted} onClick={()=>{if(!f.name.trim())return alert("Company name required");onSave(f);}}>{dirty?"💾 Save Company Settings":"✅ Saved"}</SaveBtn>
   </div>);
 }
 
@@ -2443,9 +2492,12 @@ function BackupPreviewModal({preview,currentData,onConfirm,onCancel}){
 
 // ─── MODALS ──────────────────────────────────────────────────────
 function SaleModal({data,onSave,onClose,initial}){
-  const[f,sf]=useState(initial||{date:today(),billNo:"",customerName:"",productName:"",supplierName:"",meters:"",rate:"",amount:"",gstRate:"5",remarks:""});
+  const[f,sf]=useState(initial?{...initial,amount:String((+initial.amount||0)-(+initial.freight||0))}:{date:today(),billNo:"",customerName:"",productName:"",supplierName:"",meters:"",rate:"",amount:"",freight:"0",hsn:"",unit:"Mtr",gstRate:"5",commissionRate:"1.5",remarks:""});
   const s=(k,v)=>sf(p=>({...p,[k]:v}));
-  const selectProd=(name)=>{const p=data.products.find(p=>p.name===name);sf(pr=>({...pr,productName:name,supplierName:p?.supplierName||pr.supplierName}));};
+  const selectProd=(name)=>{
+    const p=data.products.find(p=>p.name===name);
+    sf(pr=>({...pr,productName:name,supplierName:p?.supplierName||pr.supplierName,hsn:p?.hsn||pr.hsn,unit:p?.unit||pr.unit,gstRate:p?.gstRate||pr.gstRate,commissionRate:p?.commissionRate||pr.commissionRate}));
+  };
   useEffect(()=>{if(f.meters&&f.rate&&!initial)s("amount",(parseFloat(f.meters)*parseFloat(f.rate)).toFixed(2));},[f.meters,f.rate]);
   return(<ModalBase title={initial?"Edit Sale":"Add Trading Sale"} onClose={onClose}>
     <F label="Date *"><input type="date" value={f.date} onChange={e=>s("date",e.target.value)} style={IS}/></F>
@@ -2462,28 +2514,37 @@ function SaleModal({data,onSave,onClose,initial}){
     })()}
     <F label="Product *"><SmartInput value={f.productName} onChange={selectProd} placeholder="Product" list={data.products.map(p=>p.name)} idPrefix="sl-p"/></F>
     <F label="Supplier"><SmartInput value={f.supplierName} onChange={v=>s("supplierName",v)} placeholder="Supplier" list={data.suppliers.map(s=>s.name)} idPrefix="sl-s"/></F>
+    <F label="HSN / SAC Code"><input value={f.hsn||""} onChange={e=>s("hsn",e.target.value)} placeholder="Auto-filled from product" style={IS}/></F>
     <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}>
       <F label="Meters"><input type="number" value={f.meters} onChange={e=>s("meters",e.target.value)} placeholder="0" style={IS}/></F>
       <F label="Rate (₹/m)"><input type="number" value={f.rate} onChange={e=>s("rate",e.target.value)} placeholder="0" style={IS}/></F>
     </div>
-    <F label="Amount (₹) — GST inclusive"><input type="number" value={f.amount} onChange={e=>s("amount",e.target.value)} style={{...IS,fontWeight:700}}/></F>
-    <F label="GST % (price entered above already includes this)">
-      <select value={f.gstRate||"5"} onChange={e=>s("gstRate",e.target.value)} style={IS}>
-        <option value="0">0% (Exempt)</option>
-        <option value="5">5%</option>
-        <option value="12">12%</option>
-        <option value="18">18%</option>
-      </select>
-    </F>
+    <F label="Product Amount (₹) — GST inclusive"><input type="number" value={f.amount} onChange={e=>s("amount",e.target.value)} style={{...IS,fontWeight:700}}/></F>
+    <F label="Freight / Coolie Cartage (₹) — GST inclusive, charged to customer"><input type="number" value={f.freight||"0"} onChange={e=>s("freight",e.target.value)} placeholder="0" style={IS}/></F>
+    <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}>
+      <F label="GST % (prices above already include this)">
+        <select value={f.gstRate||"5"} onChange={e=>s("gstRate",e.target.value)} style={IS}>
+          <option value="0">0% (Exempt)</option>
+          <option value="5">5%</option>
+          <option value="12">12%</option>
+          <option value="18">18%</option>
+        </select>
+      </F>
+      <F label="Commission ₹/m"><input type="number" value={f.commissionRate||"1.5"} onChange={e=>s("commissionRate",e.target.value)} placeholder="1.5" style={IS}/></F>
+    </div>
     {(()=>{
       if(!f.amount||!f.customerName)return null;
       const cust=data.customers.find(c=>c.name===f.customerName);
-      const buyerState=cust?.state||SELLER_STATE;
-      const g=calcGST(f.amount,buyerState,f.gstRate);
+      const buyerState=cust?.state||data.companySettings?.state||SELLER_STATE;
+      const productAmt=+f.amount||0,freightAmt=+f.freight||0;
+      const gp=calcGST(productAmt,buyerState,f.gstRate,data.companySettings?.state);
+      const gf=calcGST(freightAmt,buyerState,f.gstRate,data.companySettings?.state);
+      const taxable=gp.taxable+gf.taxable,cgst=gp.cgst+gf.cgst,sgst=gp.sgst+gf.sgst,igst=gp.igst+gf.igst;
+      const total=productAmt+freightAmt;
       return(<div style={{background:"#F8FAFC",borderRadius:10,padding:"10px 12px",marginBottom:13,fontSize:11.5,color:C.navy,lineHeight:1.7}}>
-        <div>Taxable Value: <b>₹{fmt(g.taxable)}</b></div>
-        {g.sameState?<div>CGST {(g.rate/2)}% + SGST {(g.rate/2)}%: <b>₹{fmt(g.cgst)} + ₹{fmt(g.sgst)}</b></div>:<div>IGST {g.rate}% ({buyerState} — inter-state): <b>₹{fmt(g.igst)}</b></div>}
-        <div style={{color:C.muted,fontSize:10.5,marginTop:2}}>Total (as entered): ₹{fmt(f.amount)}</div>
+        <div>Taxable Value: <b>₹{fmt(taxable)}</b>{freightAmt>0?` (product ₹${fmt(gp.taxable)} + freight ₹${fmt(gf.taxable)})`:""}</div>
+        {gp.sameState?<div>CGST {(gp.rate/2)}% + SGST {(gp.rate/2)}%: <b>₹{fmt(cgst)} + ₹{fmt(sgst)}</b></div>:<div>IGST {gp.rate}% ({buyerState} — inter-state): <b>₹{fmt(igst)}</b></div>}
+        <div style={{color:C.muted,fontSize:10.5,marginTop:2}}>Invoice Total: ₹{fmt(total)}</div>
       </div>);
     })()}
     <F label="Remarks"><input value={f.remarks} onChange={e=>s("remarks",e.target.value)} placeholder="Optional" style={IS}/></F>
@@ -2496,13 +2557,18 @@ function SaleModal({data,onSave,onClose,initial}){
         const limit=+cust.creditLimit;
         const currentOutstanding=computeCustomerOutstanding(f.customerName,data);
         const oldAmount=initial?(+initial.amount||0):0;
-        const projected=currentOutstanding-oldAmount+(+f.amount||0);
+        const totalAmount=(+f.amount||0)+(+f.freight||0);
+        const projected=currentOutstanding-oldAmount+totalAmount;
         if(projected>limit){
           const ok=window.confirm(`⚠️ Credit Limit Alert!\n\n${f.customerName}'s credit limit is ₹${fmt(limit)}.\nProjected outstanding after this sale: ₹${fmt(projected)} — over by ₹${fmt(projected-limit)}.\n\nTap OK to save anyway, or Cancel to review.`);
           if(!ok)return;
         }
       }
-      onSave(f);
+      // `amount` saved is the TOTAL bill value (product + freight) — every outstanding/commission/
+      // ledger calculation elsewhere in the app reads `amount` as "what the customer owes for this
+      // bill", so this keeps all of that working unchanged. `freight` is kept separately alongside
+      // it purely so the invoice can show the product/freight split.
+      onSave({...f,amount:(+f.amount||0)+(+f.freight||0),freight:+f.freight||0});
     }}>Save Sale</SaveBtn>
   </ModalBase>);
 }
@@ -2646,12 +2712,18 @@ function SupplierModal({onSave,onClose,initial}){
 }
 
 function ProductModal({data,onSave,onClose,initial}){
-  const[f,sf]=useState(initial||{name:"",supplierName:"",unit:"Mtr"});
+  const[f,sf]=useState(initial||{name:"",supplierName:"",unit:"Mtr",hsn:"",gstRate:"5",commissionRate:"1.5"});
   const s=(k,v)=>sf(p=>({...p,[k]:v}));
   return(<ModalBase title={initial?"Edit Product":"Add Product"} onClose={onClose}>
     <F label="Product Name *"><input value={f.name} onChange={e=>s("name",e.target.value)} placeholder="Product name" style={IS}/></F>
     <F label="Supplier"><SmartInput value={f.supplierName} onChange={v=>s("supplierName",v)} placeholder="Supplier" list={(data?.suppliers||[]).map(s=>s.name)} idPrefix="prod-s"/></F>
     <F label="Unit"><select value={f.unit} onChange={e=>s("unit",e.target.value)} style={IS}><option>Mtr</option><option>Kg</option><option>Pcs</option></select></F>
+    <F label="HSN / SAC Code"><input value={f.hsn||""} onChange={e=>s("hsn",e.target.value)} placeholder="e.g. 5209" style={IS}/></F>
+    <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}>
+      <F label="Default GST %"><select value={f.gstRate||"5"} onChange={e=>s("gstRate",e.target.value)} style={IS}><option value="0">0%</option><option value="5">5%</option><option value="12">12%</option><option value="18">18%</option></select></F>
+      <F label="Default Commission ₹/m"><input type="number" value={f.commissionRate||"1.5"} onChange={e=>s("commissionRate",e.target.value)} placeholder="1.5" style={IS}/></F>
+    </div>
+    <div style={{fontSize:11,color:C.muted,marginTop:-6,marginBottom:13}}>These are just the defaults used when you add a Sale for this product — both GST% and Commission Rate can still be changed for an individual sale (e.g. a special rate for one customer).</div>
     <SaveBtn color={C.navy} onClick={()=>{if(!f.name)return alert("Name required");onSave(f);}}>Save Product</SaveBtn>
   </ModalBase>);
 }
