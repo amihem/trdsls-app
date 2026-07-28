@@ -5,7 +5,7 @@ import { supabase } from './supabaseClient';
 import Login from './Login';
 
 const SK = "fabric-sales-v3-trading";
-const EMPTY = { customers:[], suppliers:[], products:[], tradingSales:[], tradingPayments:[], debitNotes:[], creditNotes:[], enquiries:[], trash:[], companySettings:{name:"Navkar Fabrics",address:"",gstin:"",phone:"",email:"",state:"Delhi",bankName:"",bankAccount:"",bankIFSC:"",terms:"1. Goods once sold will not be taken back.\n2. Interest @ 18% p.a. will be charged if payment is not made within the stipulated time.\n3. Subject to jurisdiction only."} };
+const EMPTY = { customers:[], suppliers:[], products:[], tradingSales:[], tradingPayments:[], debitNotes:[], creditNotes:[], enquiries:[], trash:[], companySettings:{name:"Navkar Fabrics",address:"",gstin:"",phone:"",email:"",state:"Delhi",bankName:"",bankAccount:"",bankIFSC:"",terms:"1. Goods once sold will not be taken back.\n2. Interest @ 18% p.a. will be charged if payment is not made within the stipulated time.\n3. Subject to jurisdiction only."}, appSettings:{defaultGstRate:"5",defaultCommissionRate:"1.5",defaultCreditDays:"30",backupReminderDays:"7",trashRetention:"20"} };
 async function loadData(userId){
   try{
     const{data:row,error}=await supabase.from('user_data').select('data').eq('user_id',userId).maybeSingle();
@@ -271,9 +271,12 @@ function generateInvoice(sale,allSales,customer,companySettings){
   const totalSgst=lines.reduce((a,l)=>a+l.lineSgst,0);
   const totalIgst=lines.reduce((a,l)=>a+l.lineIgst,0);
   const totalTax=totalCgst+totalSgst+totalIgst;
-  const grandTotal=totalTaxable+totalTax;
+  const preRoundTotal=totalTaxable+totalTax;
+  const grandTotal=Math.round(preRoundTotal);
+  const roundOff=grandTotal-preRoundTotal;
   const sameState=lines[0]?lines[0].gp.sameState:true;
   const rate=lines[0]?lines[0].gp.rate:5;
+  const isExempt=rate===0;
 
   const rows=lines.map((l,i)=>`<tr>
       <td>${i+1}</td>
@@ -285,15 +288,20 @@ function generateInvoice(sale,allSales,customer,companySettings){
       <td style="text-align:right">₹${fmt(l.gp.taxable)}</td>
     </tr>`).join("");
 
-  const gstRows=sameState
-    ?`<tr><td colspan="6" style="text-align:right">CGST @ ${rate/2}%</td><td style="text-align:right">₹${fmt(totalCgst)}</td></tr>
-      <tr><td colspan="6" style="text-align:right">SGST @ ${rate/2}%</td><td style="text-align:right">₹${fmt(totalSgst)}</td></tr>`
-    :`<tr><td colspan="6" style="text-align:right">IGST @ ${rate}% (${buyerState})</td><td style="text-align:right">₹${fmt(totalIgst)}</td></tr>`;
+  const gstRows=isExempt
+    ?`<tr><td colspan="6" style="text-align:right">GST</td><td style="text-align:right">Exempt</td></tr>`
+    :sameState
+      ?`<tr><td colspan="6" style="text-align:right">CGST @ ${rate/2}%</td><td style="text-align:right">₹${fmt(totalCgst)}</td></tr>
+        <tr><td colspan="6" style="text-align:right">SGST @ ${rate/2}%</td><td style="text-align:right">₹${fmt(totalSgst)}</td></tr>`
+      :`<tr><td colspan="6" style="text-align:right">IGST @ ${rate}% (${buyerState})</td><td style="text-align:right">₹${fmt(totalIgst)}</td></tr>`;
+
+  const roundRow=Math.abs(roundOff)>=0.005?`<tr class="sub-row"><td colspan="6" style="text-align:right">${roundOff>=0?"Add":"Less"}: Rounded Off</td><td style="text-align:right">${roundOff>=0?"+":"-"}₹${fmt(Math.abs(roundOff))}</td></tr>`:"";
 
   const amountWords=`Rupees ${numberToWordsIndian(grandTotal)} Only`;
 
   const win=window.open("","_blank");
   win.document.write(`<!DOCTYPE html><html><head><title>Invoice ${sale.billNo||sale.id}</title><style>
+    @media print{body{padding:10mm;}}
     body{font-family:Arial,sans-serif;font-size:12.5px;color:#111;padding:26px;max-width:820px;margin:auto;}
     .gstin-bar{display:flex;justify-content:space-between;font-size:11px;font-weight:700;border-bottom:1px solid #333;padding-bottom:6px;margin-bottom:6px;}
     .hdr{text-align:center;border-bottom:2px solid #111;padding-bottom:10px;margin-bottom:10px;}
@@ -333,6 +341,7 @@ function generateInvoice(sale,allSales,customer,companySettings){
     <div class="parties">
       <div class="party-box"><div class="party-label">Billed to :</div><b>${sale.customerName}</b><br/>
         ${customer&&customer.city?`${customer.city}, ${buyerState}<br/>`:`${buyerState}<br/>`}
+        ${customer&&customer.phone?`Ph: ${customer.phone}<br/>`:""}
         ${customer&&customer.gstin?`GSTIN/UIN : ${customer.gstin}`:""}
       </div>
       <div class="party-box"><div class="party-label">Shipped to :</div><b>${sale.customerName}</b><br/>
@@ -346,15 +355,16 @@ function generateInvoice(sale,allSales,customer,companySettings){
       ${totalFreight>0?`<tr class="sub-row"><td colspan="6" style="text-align:right">Freight / Coolie Cartage</td><td style="text-align:right">₹${fmt(totalFreight)}</td></tr>`:""}
       <tr class="sub-row"><td colspan="6" style="text-align:right"><b>Taxable Amount</b></td><td style="text-align:right"><b>₹${fmt(totalTaxable)}</b></td></tr>
       ${gstRows}
+      ${roundRow}
       <tr class="tot-row"><td colspan="6">Invoice Value (Qty: ${fmt(totalQty)})</td><td style="text-align:right">₹${fmt(grandTotal)}</td></tr>
     </tbody></table>
     <div class="words-box">${amountWords}</div>
-    <table class="taxtable"><thead><tr><th>Tax Rate</th><th style="text-align:right">Taxable Amt.</th>${sameState?`<th style="text-align:right">CGST</th><th style="text-align:right">SGST</th>`:`<th style="text-align:right">IGST</th>`}<th style="text-align:right">Total Tax</th></tr></thead>
+    ${!isExempt?`<table class="taxtable"><thead><tr><th>Tax Rate</th><th style="text-align:right">Taxable Amt.</th>${sameState?`<th style="text-align:right">CGST</th><th style="text-align:right">SGST</th>`:`<th style="text-align:right">IGST</th>`}<th style="text-align:right">Total Tax</th></tr></thead>
       <tbody><tr><td>${rate}%</td><td style="text-align:right">₹${fmt(totalTaxable)}</td>${sameState?`<td style="text-align:right">₹${fmt(totalCgst)}</td><td style="text-align:right">₹${fmt(totalSgst)}</td>`:`<td style="text-align:right">₹${fmt(totalIgst)}</td>`}<td style="text-align:right">₹${fmt(totalTax)}</td></tr></tbody>
-    </table>
+    </table>`:""}
     ${(co.bankName||co.bankAccount)?`<div class="bank-box"><b>Bank Details :</b> ${co.bankName||""}${co.bankIFSC?`, IFSC: ${co.bankIFSC}`:""}${co.bankAccount?`<br/>A/c No: ${co.bankAccount}`:""}</div>`:""}
     <div class="footer">
-      <div class="terms-box"><b>Terms &amp; Conditions</b><br/>${(co.terms||"").split("\n").filter(Boolean).map(t=>t.replace(/^\d+\.\s*/,"")).map((t,i)=>`${i+1}. ${t}`).join("<br/>")}</div>
+      <div class="terms-box"><b>Terms &amp; Conditions</b><br/>${(co.terms||"").split("\n").filter(Boolean).map(t=>t.replace(/^\d+\.\s*/,"")).map((t,i)=>`${i+1}. ${t}`).join("<br/>")||"E.&amp;O.E."}</div>
       <div class="sign-box"><div>Receiver's Signature :</div><div><b>for ${co.name||"Navkar Fabrics"}</b><br/><br/>Authorised Signatory</div></div>
     </div>
     <script>window.onload=()=>{window.print();}<\/script>
@@ -389,10 +399,7 @@ function parseExcelData(rows){
 const TABS=[
   {id:"Dashboard",icon:"📊",label:"Dashboard"},
   {id:"Trading",icon:"🏪",label:"Entry"},
-  {id:"Outstanding",icon:"⏳",label:"Outstanding"},
-  {id:"Aging",icon:"📅",label:"Ageing"},
   {id:"Analytics",icon:"📈",label:"Analytics"},
-  {id:"Commission",icon:"💰",label:"Commission"},
   {id:"Enquiry",icon:"📝",label:"Enquiry"},
   {id:"Masters",icon:"⚙️",label:"Masters"},
   {id:"Reports",icon:"📋",label:"Reports"},
@@ -420,10 +427,11 @@ function App({user}){
     const record=data[section].find(r=>r.id===id);
     if(!record)return;
     const trashId=uid();
+    const retention=parseInt(data.appSettings?.trashRetention)||20;
     setData(p=>({
       ...p,
       [section]:p[section].filter(r=>r.id!==id),
-      trash:[{trashId,section,record,deletedAt:new Date().toISOString()},...(p.trash||[])].slice(0,20)
+      trash:[{trashId,section,record,deletedAt:new Date().toISOString()},...(p.trash||[])].slice(0,retention)
     }));
     showToast("Deleted.",false,{label:"Undo",onClick:()=>restoreTrash(trashId)});
   };
@@ -461,6 +469,10 @@ function App({user}){
   const updateCompanySettings=(updates)=>{
     setData(p=>({...p,companySettings:{...p.companySettings,...updates}}));
     showToast("Company settings saved.");
+  };
+  const updateAppSettings=(updates)=>{
+    setData(p=>({...p,appSettings:{...p.appSettings,...updates}}));
+    showToast("App settings saved.");
   };
 
   const[excelPreview,setExcelPreview]=useState(null);
@@ -525,7 +537,7 @@ function App({user}){
 
   const handleSearchSelect=(r)=>{
     setSearchOpen(false);
-    if(r.kind==="customer")navigateTab("Ledger",{customer:r.name});
+    if(r.kind==="customer")navigateTab("Reports",{repView:"ledger",customer:r.name});
     else if(r.kind==="sale")navigateTab("Trading",{view:"sales",search:r.customerName});
     else if(r.kind==="payment")navigateTab("Trading",{view:"payments",search:r.customerName});
     else if(r.kind==="debit")navigateTab("Trading",{view:"debit",search:r.customerName});
@@ -565,7 +577,7 @@ function App({user}){
       <div style={{padding:"0 20px 14px"}}>
         <button onClick={()=>setSearchOpen(true)} style={{width:"100%",background:"rgba(255,255,255,0.08)",border:"1px solid rgba(255,255,255,0.15)",borderRadius:10,padding:"9px 12px",color:"rgba(255,255,255,0.6)",fontSize:12.5,textAlign:"left",cursor:"pointer",display:"flex",alignItems:"center",gap:8}}>🔍 Search everything…</button>
       </div>
-      {TABS.map(t=>(<button key={t.id} onClick={()=>navigateTab(t.id)} style={{background:tab===t.id?"rgba(232,201,126,0.12)":"transparent",border:"none",borderLeft:tab===t.id?`3px solid ${C.gold}`:"3px solid transparent",padding:"12px 20px",textAlign:"left",color:tab===t.id?C.gold:"rgba(255,255,255,0.65)",fontSize:13.5,fontWeight:tab===t.id?700:400,cursor:"pointer",display:"flex",alignItems:"center",gap:10}}><span>{t.icon}</span>{t.label}{t.id==="Outstanding"&&overdueCount>0&&<span style={{background:C.red,color:"#fff",borderRadius:20,fontSize:10,fontWeight:800,padding:"2px 7px",marginLeft:"auto"}}>{overdueCount}</span>}</button>))}
+      {TABS.map(t=>(<button key={t.id} onClick={()=>navigateTab(t.id)} style={{background:tab===t.id?"rgba(232,201,126,0.12)":"transparent",border:"none",borderLeft:tab===t.id?`3px solid ${C.gold}`:"3px solid transparent",padding:"12px 20px",textAlign:"left",color:tab===t.id?C.gold:"rgba(255,255,255,0.65)",fontSize:13.5,fontWeight:tab===t.id?700:400,cursor:"pointer",display:"flex",alignItems:"center",gap:10}}><span>{t.icon}</span>{t.label}{t.id==="Reports"&&overdueCount>0&&<span style={{background:C.red,color:"#fff",borderRadius:20,fontSize:10,fontWeight:800,padding:"2px 7px",marginLeft:"auto"}}>{overdueCount}</span>}</button>))}
       <div style={{marginTop:"auto",padding:"16px 20px",borderTop:"1px solid rgba(255,255,255,0.08)",display:"flex",flexDirection:"column",gap:8}}>
         <button onClick={()=>importRef.current&&importRef.current.click()} style={{...hdrBtn(),flexDirection:"row",gap:8,width:"100%",justifyContent:"flex-start",padding:"10px 12px"}}>📊 <span style={{fontSize:12}}>Import Excel</span></button>
         <button onClick={handleBackupClick} style={{...hdrBtn(),flexDirection:"row",gap:8,width:"100%",justifyContent:"flex-start",padding:"10px 12px"}}>☁️ <span style={{fontSize:12}}>Backup</span></button>
@@ -597,19 +609,16 @@ function App({user}){
         <button onClick={()=>setSearchOpen(true)} style={{width:"100%",background:"rgba(255,255,255,0.1)",border:"1px solid rgba(255,255,255,0.18)",borderRadius:10,padding:"10px 12px",color:"rgba(255,255,255,0.65)",fontSize:13,textAlign:"left",cursor:"pointer"}}>🔍 Search everything…</button>
       </div>
       <div className="mob" style={{display:"none",background:C.navyMid,overflowX:"auto",WebkitOverflowScrolling:"touch",scrollbarWidth:"none",position:"sticky",top:72,zIndex:99}}>
-        {TABS.map(t=>(<button key={t.id} onClick={()=>navigateTab(t.id)} style={{flex:"0 0 auto",padding:"12px 14px",fontSize:12,fontWeight:tab===t.id?800:500,color:tab===t.id?C.gold:"rgba(255,255,255,0.6)",background:"none",border:"none",borderBottom:tab===t.id?`3px solid ${C.gold}`:"3px solid transparent",cursor:"pointer",whiteSpace:"nowrap",minHeight:44,position:"relative"}}>{t.icon} {t.label}{t.id==="Outstanding"&&overdueCount>0&&<span style={{position:"absolute",top:6,right:4,background:C.red,color:"#fff",borderRadius:10,fontSize:9,fontWeight:800,padding:"1px 5px"}}>{overdueCount}</span>}</button>))}
+        {TABS.map(t=>(<button key={t.id} onClick={()=>navigateTab(t.id)} style={{flex:"0 0 auto",padding:"12px 14px",fontSize:12,fontWeight:tab===t.id?800:500,color:tab===t.id?C.gold:"rgba(255,255,255,0.6)",background:"none",border:"none",borderBottom:tab===t.id?`3px solid ${C.gold}`:"3px solid transparent",cursor:"pointer",whiteSpace:"nowrap",minHeight:44,position:"relative"}}>{t.icon} {t.label}{t.id==="Reports"&&overdueCount>0&&<span style={{position:"absolute",top:6,right:4,background:C.red,color:"#fff",borderRadius:10,fontSize:9,fontWeight:800,padding:"1px 5px"}}>{overdueCount}</span>}</button>))}
       </div>
       <div className="main" style={{marginLeft:0,padding:"18px 16px 40px",maxWidth:860}}>
-        {tab==="Dashboard"  &&<DashboardTab data={data} tots={{totTradingSale,totTradingPaid,totTradingOut,totComm}} onNav={id=>navigateTab(id)} tradingOut={tradingOut} lastBackupAt={lastBackupAt} onShareBackup={handleShareBackup}/>}
+        {tab==="Dashboard"  &&<DashboardTab data={data} tots={{totTradingSale,totTradingPaid,totTradingOut,totComm}} onNav={(id,hint)=>navigateTab(id,hint)} tradingOut={tradingOut} lastBackupAt={lastBackupAt} onShareBackup={handleShareBackup}/>}
         {tab==="Trading"    &&<TradingTab data={data} onAdd={()=>setModal({type:"sale"})} onAddPay={()=>setModal({type:"payment"})} onAddDebit={()=>setModal({type:"debit"})} onAddCredit={()=>setModal({type:"credit"})} onDel={del} onEdit={(type,rec)=>setModal({type:`edit-${type}`,rec})} tradingOut={tradingOut} initialSearch={navHint?.search} initialView={navHint?.view}/>}
-        {tab==="Outstanding"&&<OutstandingTab tradingOut={tradingOut} data={data} onAddPay={(pre)=>setModal({type:"payment",preCustomer:pre})} generatePDF={generatePDF}/>}
-        {tab==="Aging"      &&<AgingTab data={data} generatePDF={generatePDF}/>}
         {tab==="Analytics"  &&<AnalyticsTab data={data} tradingOut={tradingOut}/>}
-        {tab==="Commission" &&<CommissionTab data={data} generatePDF={generatePDF}/>}
         {tab==="Enquiry"    &&<EnquiryTab data={data} onAdd={r=>add("enquiries",r)} onUpdate={r=>{setData(p=>({...p,enquiries:p.enquiries.map(e=>e.id===r.id?r:e)}));showToast("Updated.");}} onDel={id=>del("enquiries",id)}/>}
         {tab==="Masters"    &&<MastersTab data={data} onAdd={setModal} onDel={del} onEdit={(type,rec)=>setModal({type:`edit-${type}`,rec})} onImportExcel={()=>importRef.current&&importRef.current.click()} trash={data.trash||[]} onRestore={restoreTrash} onPermanentDelete={permanentDeleteTrash} onEmptyTrash={emptyTrash} initialSearch={navHint?.search} initialView={navHint?.view}/>}
-        {tab==="Reports"    &&<ReportsTab data={data} tradingOut={tradingOut} tots={{totTradingSale,totTradingPaid,totTradingOut,totComm}} generatePDF={generatePDF} onAddPay={(pre)=>setModal({type:"payment",preCustomer:pre})}/>}
-        {tab==="Settings"   &&<SettingsTab data={data} onSave={updateCompanySettings}/>}
+        {tab==="Reports"    &&<ReportsTab data={data} tradingOut={tradingOut} tots={{totTradingSale,totTradingPaid,totTradingOut,totComm}} generatePDF={generatePDF} onAddPay={(pre)=>setModal({type:"payment",preCustomer:pre})} initialRep={navHint?.repView} initialCustomer={navHint?.customer}/>}
+        {tab==="Settings"   &&<SettingsTab data={data} onSave={updateCompanySettings} onSaveApp={updateAppSettings}/>}
       </div>
       {modal?.type==="sale"          &&<SaleModal    data={data} onSave={r=>add("tradingSales",r)}    onClose={()=>setModal(null)}/>}
       {modal?.type==="payment"       &&<PaymentModal data={data} onSave={r=>add("tradingPayments",r)} onClose={()=>setModal(null)} preCustomer={modal.preCustomer}/>}
@@ -619,10 +628,10 @@ function App({user}){
       {modal?.type==="edit-payment"  &&<PaymentModal data={data} onSave={r=>updateMaster("tradingPayments",{...modal.rec,...r})} onClose={()=>setModal(null)} initial={modal.rec}/>}
       {modal?.type==="edit-debit"    &&<DebitModal   data={data} onSave={r=>updateMaster("debitNotes",{...modal.rec,...r})}      onClose={()=>setModal(null)} initial={modal.rec}/>}
       {modal?.type==="edit-credit"   &&<CreditModal  data={data} onSave={r=>updateMaster("creditNotes",{...modal.rec,...r})}     onClose={()=>setModal(null)} initial={modal.rec}/>}
-      {modal?.type==="customer"      &&<CustomerModal onSave={r=>add("customers",r)}                  onClose={()=>setModal(null)} existingCustomers={data.customers}/>}
+      {modal?.type==="customer"      &&<CustomerModal data={data} onSave={r=>add("customers",r)}                  onClose={()=>setModal(null)} existingCustomers={data.customers}/>}
       {modal?.type==="supplier"      &&<SupplierModal onSave={r=>add("suppliers",r)}                  onClose={()=>setModal(null)}/>}
       {modal?.type==="product"       &&<ProductModal  data={data} onSave={r=>add("products",r)}       onClose={()=>setModal(null)}/>}
-      {modal?.type==="edit-customer" &&<CustomerModal onSave={r=>updateMaster("customers",r)}         onClose={()=>setModal(null)} initial={modal.rec} existingCustomers={data.customers}/>}
+      {modal?.type==="edit-customer" &&<CustomerModal data={data} onSave={r=>updateMaster("customers",r)}         onClose={()=>setModal(null)} initial={modal.rec} existingCustomers={data.customers}/>}
       {modal?.type==="edit-supplier" &&<SupplierModal onSave={r=>updateMaster("suppliers",r)}         onClose={()=>setModal(null)} initial={modal.rec}/>}
       {modal?.type==="edit-product"  &&<ProductModal  data={data} onSave={r=>updateMaster("products",r)} onClose={()=>setModal(null)} initial={modal.rec}/>}
       <input ref={importRef} type="file" accept=".xlsx,.xls" onChange={handleExcelImport} style={{display:"none"}}/>
@@ -644,7 +653,8 @@ function DashboardTab({data,tots,onNav,tradingOut,lastBackupAt,onShareBackup}){
   const recent=[...data.tradingSales].sort((a,b)=>new Date(b.date)-new Date(a.date)).slice(0,8);
   const outList=Object.values(tradingOut).filter(v=>Math.max(0,v.due+(v.debit||0)-v.paid-(v.credit||0))>0).sort((a,b)=>b.due-b.paid-(a.due-a.paid)).slice(0,5);
   const daysSinceBackup=lastBackupAt?Math.floor((Date.now()-new Date(lastBackupAt).getTime())/86400000):null;
-  const backupOverdue=daysSinceBackup===null||daysSinceBackup>=7;
+  const backupReminderDays=parseInt(data.appSettings?.backupReminderDays)||7;
+  const backupOverdue=daysSinceBackup===null||daysSinceBackup>=backupReminderDays;
 
   const phoneMap={};data.customers.forEach(c=>{phoneMap[c.name]=c.phone;});
   const dueBills=computeDueBills(data);
@@ -701,8 +711,8 @@ function DashboardTab({data,tots,onNav,tradingOut,lastBackupAt,onShareBackup}){
       <KpiCard icon="💰" label="Commission"   val={totComm}        color={C.purple}/>
     </div>
     <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(140px,1fr))",gap:10,marginBottom:16}}>
-      {[{icon:"📈",t:"Analytics",l:"Analytics",bg:C.blue},{icon:"⏳",t:"Outstanding",l:"Outstanding",bg:C.red},{icon:"📅",t:"Aging",l:"Ageing",bg:C.orange},{icon:"📋",t:"Reports",l:"Reports",bg:C.purple}].map(q=>(
-        <button key={q.t} onClick={()=>onNav(q.t)} style={{background:q.bg,color:"#fff",border:"none",borderRadius:13,padding:"14px 10px",fontSize:13,fontWeight:700,cursor:"pointer",textAlign:"center"}}>
+      {[{icon:"📈",t:"Analytics",l:"Analytics",bg:C.blue,hint:null},{icon:"⏳",t:"Reports",l:"Outstanding",bg:C.red,hint:{repView:"outstanding"}},{icon:"📅",t:"Reports",l:"Ageing",bg:C.orange,hint:{repView:"ageing"}},{icon:"📋",t:"Reports",l:"Reports",bg:C.purple,hint:null}].map(q=>(
+        <button key={q.l} onClick={()=>onNav(q.t,q.hint)} style={{background:q.bg,color:"#fff",border:"none",borderRadius:13,padding:"14px 10px",fontSize:13,fontWeight:700,cursor:"pointer",textAlign:"center"}}>
           <div style={{fontSize:22,marginBottom:4}}>{q.icon}</div>{q.l}
         </button>
       ))}
@@ -1040,8 +1050,18 @@ function LedgerTab({data,generatePDF,initialCustomer}){
   },[data,selectedCustomer]);
 
   const[fy,setFy]=useState(ALL_FY);
+  const[customFrom,setCustomFrom]=useState("");
+  const[customTo,setCustomTo]=useState("");
+  const useCustomRange=!!(customFrom&&customTo);
   const availableFYs=useMemo(()=>getAvailableFYs(entries),[entries]);
-  const filteredEntries=useMemo(()=>fy===ALL_FY?entries:filterByFY(entries,fy),[entries,fy]);
+  const inCustomRange=(dateStr)=>{
+    const d=new Date(dateStr).setHours(0,0,0,0);
+    return d>=new Date(customFrom).setHours(0,0,0,0)&&d<=new Date(customTo).setHours(0,0,0,0);
+  };
+  const filteredEntries=useMemo(()=>{
+    if(useCustomRange)return entries.filter(r=>inCustomRange(r.date));
+    return fy===ALL_FY?entries:filterByFY(entries,fy);
+  },[entries,fy,customFrom,customTo]);
 
   const totals=useMemo(()=>filteredEntries.reduce((a,r)=>{
     if(r.type==="Sale")a.sales+=r.debit;
@@ -1102,16 +1122,23 @@ function LedgerTab({data,generatePDF,initialCustomer}){
       <div style={{background:"#F8FAFC",borderRadius:10,padding:"10px 12px",borderLeft:`3px solid ${C.teal}`}}><div style={{fontSize:9.5,color:C.muted,fontWeight:600}}>CREDIT NOTES</div><div style={{fontSize:13,fontWeight:900,color:C.teal}}>₹{fmt(totals.credit)}</div></div>
     </div>
 
-    {/* Date-wise filter — narrow the statement down to one financial year, running balance stays accurate */}
+    {/* Date-wise filter — narrow the statement down to one financial year or a custom range, running balance stays accurate */}
     <div style={{marginBottom:14}}>
-      <div style={{fontSize:10.5,color:C.muted,fontWeight:600,marginBottom:6,textTransform:"uppercase",letterSpacing:0.5}}>Filter by Date (Financial Year)</div>
-      <div style={{display:"flex",overflowX:"auto",gap:6,scrollbarWidth:"none",paddingBottom:2}}>
+      <div style={{fontSize:10.5,color:C.muted,fontWeight:600,marginBottom:6,textTransform:"uppercase",letterSpacing:0.5}}>Filter by Date</div>
+      <div style={{display:"flex",overflowX:"auto",gap:6,scrollbarWidth:"none",paddingBottom:2,marginBottom:customFrom||customTo?8:0}}>
         {availableFYs.map(f=>(
-          <button key={f} onClick={()=>setFy(f)} style={{flex:"0 0 auto",padding:"8px 14px",borderRadius:20,fontSize:12,fontWeight:fy===f?700:500,border:`1.5px solid ${fy===f?C.navy:C.border}`,background:fy===f?C.navy:"#fff",color:fy===f?C.gold:"#666",cursor:"pointer",whiteSpace:"nowrap"}}>
+          <button key={f} onClick={()=>{setFy(f);setCustomFrom("");setCustomTo("");}} style={{flex:"0 0 auto",padding:"8px 14px",borderRadius:20,fontSize:12,fontWeight:!useCustomRange&&fy===f?700:500,border:`1.5px solid ${!useCustomRange&&fy===f?C.navy:C.border}`,background:!useCustomRange&&fy===f?C.navy:"#fff",color:!useCustomRange&&fy===f?C.gold:"#666",cursor:"pointer",whiteSpace:"nowrap"}}>
             {f===ALL_FY?"📊 All Time":`FY ${f}`}
           </button>
         ))}
+        <button onClick={()=>{if(!customFrom)setCustomFrom(today());if(!customTo)setCustomTo(today());}} style={{flex:"0 0 auto",padding:"8px 14px",borderRadius:20,fontSize:12,fontWeight:useCustomRange?700:500,border:`1.5px solid ${useCustomRange?C.navy:C.border}`,background:useCustomRange?C.navy:"#fff",color:useCustomRange?C.gold:"#666",cursor:"pointer",whiteSpace:"nowrap"}}>📅 Custom Range</button>
       </div>
+      {(customFrom||customTo||useCustomRange)&&<div style={{display:"flex",gap:8,alignItems:"center"}}>
+        <input type="date" value={customFrom} onChange={e=>setCustomFrom(e.target.value)} style={{...IS,padding:"8px 10px",fontSize:12.5}}/>
+        <span style={{fontSize:11,color:C.muted}}>to</span>
+        <input type="date" value={customTo} onChange={e=>setCustomTo(e.target.value)} style={{...IS,padding:"8px 10px",fontSize:12.5}}/>
+        <button onClick={()=>{setCustomFrom("");setCustomTo("");}} style={{background:"#F0F4F8",border:"none",borderRadius:8,padding:"8px 10px",fontSize:11,color:C.muted,cursor:"pointer",flexShrink:0}}>✕</button>
+      </div>}
     </div>
 
     <div style={{display:"flex",gap:8,marginBottom:14}}>
@@ -1939,12 +1966,60 @@ function calcFIFOCommission(tradingSales,tradingPayments,creditNotes=[],debitNot
 
 function CommissionTab({data,generatePDF}){
   const[view,setView]=useState("summary");
-  const{totalCommission,commDetails,commByCustomer}=calcFIFOCommission(data.tradingSales,data.tradingPayments,data.creditNotes||[],data.debitNotes||[]);
+  const[fy,setFy]=useState(ALL_FY);
+  const[customFrom,setCustomFrom]=useState("");
+  const[customTo,setCustomTo]=useState("");
+  const useCustomRange=!!(customFrom&&customTo);
+
+  // Always run FIFO over the FULL, unfiltered history — a payment can clear a bill from any
+  // date, so filtering the inputs first would silently break which bills count as "paid".
+  // The date filter below only changes which of the correctly-computed bills are shown/totalled.
+  const{commDetails}=useMemo(()=>calcFIFOCommission(data.tradingSales,data.tradingPayments,data.creditNotes||[],data.debitNotes||[]),[data]);
+
+  const availableFYs=useMemo(()=>getAvailableFYs(commDetails),[commDetails]);
+  const inCustomRange=(dateStr)=>{
+    const d=new Date(dateStr).setHours(0,0,0,0);
+    return d>=new Date(customFrom).setHours(0,0,0,0)&&d<=new Date(customTo).setHours(0,0,0,0);
+  };
+  const detailList=useMemo(()=>{
+    let list=[...commDetails];
+    if(useCustomRange)list=list.filter(v=>inCustomRange(v.date));
+    else if(fy!==ALL_FY)list=filterByFY(list,fy);
+    return list.sort((a,b)=>new Date(b.date)-new Date(a.date));
+  },[commDetails,fy,customFrom,customTo]);
+
+  const commByCustomer={};
+  detailList.forEach(v=>{
+    if(!commByCustomer[v.customer])commByCustomer[v.customer]={name:v.customer,commission:0,bills:0,meters:0};
+    commByCustomer[v.customer].commission+=v.commission;
+    commByCustomer[v.customer].bills+=1;
+    commByCustomer[v.customer].meters+=v.qty;
+  });
   const commList=Object.values(commByCustomer).sort((a,b)=>b.commission-a.commission);
-  const detailList=[...commDetails].sort((a,b)=>new Date(b.date)-new Date(a.date));
+  const totalCommission=detailList.reduce((a,v)=>a+v.commission,0);
   const totalBills=commList.reduce((a,v)=>a+v.bills,0);
   const totalMeters=commList.reduce((a,v)=>a+v.meters,0);
   const maxComm=commList[0]?.commission||1;
+
+  const DatePicker=()=>(
+    <div style={{marginBottom:12}}>
+      <div style={{fontSize:10.5,color:C.muted,fontWeight:600,marginBottom:5,textTransform:"uppercase"}}>Filter by Date</div>
+      <div style={{display:"flex",overflowX:"auto",gap:5,scrollbarWidth:"none",marginBottom:customFrom||customTo?8:0}}>
+        {availableFYs.map(f=>(
+          <button key={f} onClick={()=>{setFy(f);setCustomFrom("");setCustomTo("");}} style={{flex:"0 0 auto",padding:"7px 12px",borderRadius:16,fontSize:11.5,fontWeight:!useCustomRange&&fy===f?700:500,border:`1.5px solid ${!useCustomRange&&fy===f?C.navy:C.border}`,background:!useCustomRange&&fy===f?C.navy:"#fff",color:!useCustomRange&&fy===f?C.gold:"#666",cursor:"pointer",whiteSpace:"nowrap"}}>
+            {f===ALL_FY?"All":f}
+          </button>
+        ))}
+        <button onClick={()=>{if(!customFrom)setCustomFrom(today());if(!customTo)setCustomTo(today());}} style={{flex:"0 0 auto",padding:"7px 12px",borderRadius:16,fontSize:11.5,fontWeight:useCustomRange?700:500,border:`1.5px solid ${useCustomRange?C.navy:C.border}`,background:useCustomRange?C.navy:"#fff",color:useCustomRange?C.gold:"#666",cursor:"pointer",whiteSpace:"nowrap"}}>📅 Custom Range</button>
+      </div>
+      {(customFrom||customTo||useCustomRange)&&<div style={{display:"flex",gap:8,alignItems:"center"}}>
+        <input type="date" value={customFrom} onChange={e=>setCustomFrom(e.target.value)} style={{...IS,padding:"8px 10px",fontSize:12.5}}/>
+        <span style={{fontSize:11,color:C.muted}}>to</span>
+        <input type="date" value={customTo} onChange={e=>setCustomTo(e.target.value)} style={{...IS,padding:"8px 10px",fontSize:12.5}}/>
+        <button onClick={()=>{setCustomFrom("");setCustomTo("");}} style={{background:"#F0F4F8",border:"none",borderRadius:8,padding:"8px 10px",fontSize:11,color:C.muted,cursor:"pointer",flexShrink:0}}>✕</button>
+      </div>}
+    </div>
+  );
 
   const doPDF=()=>{
     if(view==="summary"){
@@ -1959,9 +2034,9 @@ function CommissionTab({data,generatePDF}){
   return(<div>
     {/* Hero Banner */}
     <div style={{background:`linear-gradient(135deg,${C.navy} 0%,#1E3A5F 100%)`,borderRadius:16,padding:"18px 16px",marginBottom:14,border:"1px solid rgba(232,201,126,0.3)",boxShadow:"0 4px 20px rgba(0,0,0,0.15)"}}>
-      <div style={{fontSize:10,color:"rgba(232,201,126,0.7)",textTransform:"uppercase",letterSpacing:1.5,fontWeight:700,marginBottom:4}}>💰 Commission Earned (FIFO)</div>
+      <div style={{fontSize:10,color:"rgba(232,201,126,0.7)",textTransform:"uppercase",letterSpacing:1.5,fontWeight:700,marginBottom:4}}>💰 Commission Earned (FIFO){fy!==ALL_FY&&!useCustomRange?` — FY ${fy}`:""}</div>
       <div style={{fontSize:32,fontWeight:900,color:C.gold,letterSpacing:-0.5}}>₹{fmt(totalCommission)}</div>
-      <div style={{fontSize:11,color:"rgba(255,255,255,0.4)",marginTop:4}}>Only fully adjusted bills · ₹1.50 per meter</div>
+      <div style={{fontSize:11,color:"rgba(255,255,255,0.4)",marginTop:4}}>Only fully adjusted bills · rate varies by product/customer</div>
       <div style={{display:"flex",gap:16,marginTop:14,paddingTop:12,borderTop:"1px solid rgba(255,255,255,0.08)"}}>
         <div><div style={{fontSize:18,fontWeight:900,color:"#fff"}}>{commList.length}</div><div style={{fontSize:10,color:"rgba(255,255,255,0.5)"}}>Customers</div></div>
         <div><div style={{fontSize:18,fontWeight:900,color:"#fff"}}>{totalBills}</div><div style={{fontSize:10,color:"rgba(255,255,255,0.5)"}}>Bills Cleared</div></div>
@@ -1969,6 +2044,7 @@ function CommissionTab({data,generatePDF}){
       </div>
     </div>
 
+    <DatePicker/>
     {/* Action Buttons */}
     <div style={{display:"flex",gap:8,marginBottom:12}}>
       <button onClick={()=>exportCSV([["#","Customer","Bills","Meters","Commission(₹)"],...commList.map((v,i)=>[i+1,v.name,v.bills,v.meters,v.commission])],`Commission_${today()}.csv`)} style={{background:C.green,color:"#fff",border:"none",borderRadius:9,padding:"10px 16px",fontSize:12.5,fontWeight:700,cursor:"pointer",minHeight:42,display:"flex",alignItems:"center",gap:6}}>📥 CSV</button>
@@ -2123,8 +2199,8 @@ function MastersTab({data,onAdd,onDel,onEdit,onImportExcel,trash,onRestore,onPer
 }
 
 // ─── REPORTS TAB ─────────────────────────────────────────────────
-function ReportsTab({data,tradingOut,tots,generatePDF,onAddPay}){
-  const[rep,setRep]=useState("sales");
+function ReportsTab({data,tradingOut,tots,generatePDF,onAddPay,initialRep,initialCustomer}){
+  const[rep,setRep]=useState(initialRep||"sales");
   const[fy,setFY]=useState(ALL_FY);
   const[customFrom,setCustomFrom]=useState("");
   const[customTo,setCustomTo]=useState("");
@@ -2320,7 +2396,7 @@ function ReportsTab({data,tradingOut,tots,generatePDF,onAddPay}){
 
     {rep==="ageing"&&<AgingTab data={data} generatePDF={generatePDF}/>}
 
-    {rep==="ledger"&&<LedgerTab data={data} generatePDF={generatePDF}/>}
+    {rep==="ledger"&&<LedgerTab data={data} generatePDF={generatePDF} initialCustomer={initialCustomer}/>}
   </div>);
 }
 
@@ -2371,7 +2447,7 @@ function GlobalSearchModal({data,onClose,onSelect}){
 }
 
 // ─── SETTINGS TAB (Company Settings) ────────────────────────────
-function SettingsTab({data,onSave}){
+function SettingsTab({data,onSave,onSaveApp}){
   const co=data.companySettings||{};
   const[f,sf]=useState({
     name:co.name||"Navkar Fabrics",address:co.address||"",gstin:co.gstin||"",phone:co.phone||"",email:co.email||"",
@@ -2380,6 +2456,15 @@ function SettingsTab({data,onSave}){
   });
   const s=(k,v)=>sf(p=>({...p,[k]:v}));
   const dirty=JSON.stringify(f)!==JSON.stringify({name:co.name||"Navkar Fabrics",address:co.address||"",gstin:co.gstin||"",phone:co.phone||"",email:co.email||"",state:co.state||"Delhi",bankName:co.bankName||"",bankAccount:co.bankAccount||"",bankIFSC:co.bankIFSC||"",terms:co.terms||""});
+
+  const ap=data.appSettings||{};
+  const[af,saf]=useState({
+    defaultGstRate:ap.defaultGstRate||"5",defaultCommissionRate:ap.defaultCommissionRate||"1.5",
+    defaultCreditDays:ap.defaultCreditDays||"30",backupReminderDays:ap.backupReminderDays||"7",trashRetention:ap.trashRetention||"20",
+  });
+  const as=(k,v)=>saf(p=>({...p,[k]:v}));
+  const appDirty=JSON.stringify(af)!==JSON.stringify({defaultGstRate:ap.defaultGstRate||"5",defaultCommissionRate:ap.defaultCommissionRate||"1.5",defaultCreditDays:ap.defaultCreditDays||"30",backupReminderDays:ap.backupReminderDays||"7",trashRetention:ap.trashRetention||"20"});
+
   return(<div>
     <SecTitle>🏢 Company Settings</SecTitle>
     <div style={{background:"#FEF9E7",borderRadius:10,padding:"10px 13px",marginBottom:16,fontSize:12,color:"#7D6608",border:"1px solid #F9E79F"}}>
@@ -2417,6 +2502,35 @@ function SettingsTab({data,onSave}){
     </div>
 
     <SaveBtn color={dirty?C.navy:C.muted} onClick={()=>{if(!f.name.trim())return alert("Company name required");onSave(f);}}>{dirty?"💾 Save Company Settings":"✅ Saved"}</SaveBtn>
+
+    <div style={{marginTop:28}}>
+      <SecTitle>⚙️ App Preferences</SecTitle>
+      <div style={{background:"#FEF9E7",borderRadius:10,padding:"10px 13px",marginBottom:16,fontSize:12,color:"#7D6608",border:"1px solid #F9E79F"}}>
+        These are just the app's defaults — you can still change any of them for an individual customer, product, or sale whenever you need to.
+      </div>
+      <div style={{background:C.card,borderRadius:14,padding:16,marginBottom:16,boxShadow:"0 1px 8px rgba(0,0,0,0.06)"}}>
+        <div style={{fontWeight:800,fontSize:14,color:C.navy,marginBottom:12}}>Defaults for New Records</div>
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}>
+          <F label="Default GST %">
+            <select value={af.defaultGstRate} onChange={e=>as("defaultGstRate",e.target.value)} style={IS}>
+              <option value="0">0%</option><option value="5">5%</option><option value="12">12%</option><option value="18">18%</option>
+            </select>
+          </F>
+          <F label="Default Commission ₹/m"><input type="number" value={af.defaultCommissionRate} onChange={e=>as("defaultCommissionRate",e.target.value)} style={IS}/></F>
+        </div>
+        <F label="Default Credit Days (for new customers)">
+          <select value={af.defaultCreditDays} onChange={e=>as("defaultCreditDays",e.target.value)} style={IS}>
+            <option value="0">0 Days (Immediate)</option><option value="15">15 Days</option><option value="30">30 Days</option><option value="45">45 Days</option><option value="60">60 Days</option><option value="90">90 Days</option>
+          </select>
+        </F>
+      </div>
+      <div style={{background:C.card,borderRadius:14,padding:16,marginBottom:16,boxShadow:"0 1px 8px rgba(0,0,0,0.06)"}}>
+        <div style={{fontWeight:800,fontSize:14,color:C.navy,marginBottom:12}}>App Behaviour</div>
+        <F label="Remind me to backup after (days)"><input type="number" value={af.backupReminderDays} onChange={e=>as("backupReminderDays",e.target.value)} style={IS}/></F>
+        <F label="Keep last N deleted records in Trash"><input type="number" value={af.trashRetention} onChange={e=>as("trashRetention",e.target.value)} style={IS}/></F>
+      </div>
+      <SaveBtn color={appDirty?C.navy:C.muted} onClick={()=>onSaveApp(af)}>{appDirty?"💾 Save App Preferences":"✅ Saved"}</SaveBtn>
+    </div>
   </div>);
 }
 
@@ -2492,7 +2606,7 @@ function BackupPreviewModal({preview,currentData,onConfirm,onCancel}){
 
 // ─── MODALS ──────────────────────────────────────────────────────
 function SaleModal({data,onSave,onClose,initial}){
-  const[f,sf]=useState(initial?{...initial,amount:String((+initial.amount||0)-(+initial.freight||0))}:{date:today(),billNo:"",customerName:"",productName:"",supplierName:"",meters:"",rate:"",amount:"",freight:"0",hsn:"",unit:"Mtr",gstRate:"5",commissionRate:"1.5",remarks:""});
+  const[f,sf]=useState(initial?{...initial,amount:String((+initial.amount||0)-(+initial.freight||0))}:{date:today(),billNo:"",customerName:"",productName:"",supplierName:"",meters:"",rate:"",amount:"",freight:"0",hsn:"",unit:"Mtr",gstRate:data?.appSettings?.defaultGstRate||"5",commissionRate:data?.appSettings?.defaultCommissionRate||"1.5",remarks:""});
   const s=(k,v)=>sf(p=>({...p,[k]:v}));
   const selectProd=(name)=>{
     const p=data.products.find(p=>p.name===name);
@@ -2663,8 +2777,8 @@ function CreditModal({data,onSave,onClose,initial}){
   </ModalBase>);
 }
 
-function CustomerModal({onSave,onClose,initial,existingCustomers}){
-  const[f,sf]=useState(initial||{name:"",type:"Trading",phone:"",city:"",state:"Delhi",gstin:"",creditDays:"30",creditLimit:""});
+function CustomerModal({data,onSave,onClose,initial,existingCustomers}){
+  const[f,sf]=useState(initial||{name:"",type:"Trading",phone:"",city:"",state:data?.companySettings?.state||"Delhi",gstin:"",creditDays:data?.appSettings?.defaultCreditDays||"30",creditLimit:""});
   const s=(k,v)=>sf(p=>({...p,[k]:v}));
   return(<ModalBase title={initial?"Edit Customer":"Add Customer"} onClose={onClose}>
     <F label="Name *"><input value={f.name} onChange={e=>s("name",e.target.value)} placeholder="Customer name" style={IS}/></F>
@@ -2712,7 +2826,7 @@ function SupplierModal({onSave,onClose,initial}){
 }
 
 function ProductModal({data,onSave,onClose,initial}){
-  const[f,sf]=useState(initial||{name:"",supplierName:"",unit:"Mtr",hsn:"",gstRate:"5",commissionRate:"1.5"});
+  const[f,sf]=useState(initial||{name:"",supplierName:"",unit:"Mtr",hsn:"",gstRate:data?.appSettings?.defaultGstRate||"5",commissionRate:data?.appSettings?.defaultCommissionRate||"1.5"});
   const s=(k,v)=>sf(p=>({...p,[k]:v}));
   return(<ModalBase title={initial?"Edit Product":"Add Product"} onClose={onClose}>
     <F label="Product Name *"><input value={f.name} onChange={e=>s("name",e.target.value)} placeholder="Product name" style={IS}/></F>
