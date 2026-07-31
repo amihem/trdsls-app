@@ -5,7 +5,7 @@ import { supabase } from './supabaseClient';
 import Login from './Login';
 
 const SK = "fabric-sales-v3-trading";
-const EMPTY = { customers:[], suppliers:[], products:[], tradingSales:[], tradingPayments:[], debitNotes:[], creditNotes:[], enquiries:[], trash:[], companySettings:{name:"Navkar Fabrics",address:"",gstin:"",phone:"",email:"",state:"Delhi",bankName:"",bankAccount:"",bankIFSC:"",terms:"1. Goods once sold will not be taken back.\n2. Interest @ 18% p.a. will be charged if payment is not made within the stipulated time.\n3. Subject to jurisdiction only."}, appSettings:{defaultGstRate:"5",defaultCommissionRate:"1.5",defaultCreditDays:"30",backupReminderDays:"7",trashRetention:"20"} };
+const EMPTY = { customers:[], suppliers:[], products:[], tradingSales:[], tradingPayments:[], debitNotes:[], creditNotes:[], enquiries:[], trash:[], materialPrices:[], companySettings:{name:"Navkar Fabrics",address:"",gstin:"",phone:"",email:"",state:"Delhi",bankName:"",bankAccount:"",bankIFSC:"",terms:"1. Goods once sold will not be taken back.\n2. Interest @ 18% p.a. will be charged if payment is not made within the stipulated time.\n3. Subject to jurisdiction only."}, appSettings:{defaultGstRate:"5",defaultCommissionRate:"1.5",defaultCreditDays:"30",backupReminderDays:"7",trashRetention:"20"} };
 async function loadData(userId){
   try{
     const{data:row,error}=await supabase.from('user_data').select('data').eq('user_id',userId).maybeSingle();
@@ -400,6 +400,7 @@ const TABS=[
   {id:"Dashboard",icon:"📊",label:"Dashboard"},
   {id:"Trading",icon:"🏪",label:"Entry"},
   {id:"Analytics",icon:"📈",label:"Analytics"},
+  {id:"Market",icon:"💹",label:"Market"},
   {id:"Enquiry",icon:"📝",label:"Enquiry"},
   {id:"Masters",icon:"⚙️",label:"Masters"},
   {id:"Reports",icon:"📋",label:"Reports"},
@@ -473,6 +474,10 @@ function App({user}){
   const updateAppSettings=(updates)=>{
     setData(p=>({...p,appSettings:{...p.appSettings,...updates}}));
     showToast("App settings saved.");
+  };
+  const addMaterialPrice=(entry)=>{
+    setData(p=>({...p,materialPrices:[...(p.materialPrices||[]),{...entry,id:uid()}]}));
+    showToast("Price entry saved.");
   };
 
   const[excelPreview,setExcelPreview]=useState(null);
@@ -615,6 +620,7 @@ function App({user}){
         {tab==="Dashboard"  &&<DashboardTab data={data} tots={{totTradingSale,totTradingPaid,totTradingOut,totComm}} onNav={(id,hint)=>navigateTab(id,hint)} tradingOut={tradingOut} lastBackupAt={lastBackupAt} onShareBackup={handleShareBackup}/>}
         {tab==="Trading"    &&<TradingTab data={data} onAdd={()=>setModal({type:"sale"})} onAddPay={()=>setModal({type:"payment"})} onAddDebit={()=>setModal({type:"debit"})} onAddCredit={()=>setModal({type:"credit"})} onDel={del} onEdit={(type,rec)=>setModal({type:`edit-${type}`,rec})} tradingOut={tradingOut} initialSearch={navHint?.search} initialView={navHint?.view}/>}
         {tab==="Analytics"  &&<AnalyticsTab data={data} tradingOut={tradingOut}/>}
+        {tab==="Market"     &&<MarketTab data={data} onAddPrice={addMaterialPrice}/>}
         {tab==="Enquiry"    &&<EnquiryTab data={data} onAdd={r=>add("enquiries",r)} onUpdate={r=>{setData(p=>({...p,enquiries:p.enquiries.map(e=>e.id===r.id?r:e)}));showToast("Updated.");}} onDel={id=>del("enquiries",id)}/>}
         {tab==="Masters"    &&<MastersTab data={data} onAdd={setModal} onDel={del} onEdit={(type,rec)=>setModal({type:`edit-${type}`,rec})} onImportExcel={()=>importRef.current&&importRef.current.click()} trash={data.trash||[]} onRestore={restoreTrash} onPermanentDelete={permanentDeleteTrash} onEmptyTrash={emptyTrash} initialSearch={navHint?.search} initialView={navHint?.view}/>}
         {tab==="Reports"    &&<ReportsTab data={data} tradingOut={tradingOut} tots={{totTradingSale,totTradingPaid,totTradingOut,totComm}} generatePDF={generatePDF} onAddPay={(pre)=>setModal({type:"payment",preCustomer:pre})} initialRep={navHint?.repView} initialCustomer={navHint?.customer}/>}
@@ -1762,6 +1768,154 @@ function AnalyticsTab({data,tradingOut}){
         </ResponsiveContainer>
         :<Empty text="No debit/credit notes for selected year."/>}
       </>}
+    </div>
+  </div>);
+}
+
+// ─── MARKET INTELLIGENCE TAB ────────────────────────────────────
+// Historical raw-material prices are logged manually (no live external market feed configured),
+// and stored inside the same synced `data` object as everything else — no separate Supabase
+// table/RLS setup needed. Falls back to illustrative dummy data (last 4 weeks) when nothing
+// has been logged yet, so the charts/UI are never empty on first use.
+function generateDummyMaterialPrices(){
+  const days=[];
+  const base=new Date();
+  for(let i=3;i>=0;i--){
+    const d=new Date(base);d.setDate(d.getDate()-i*7);
+    days.push({
+      id:`dummy-${i}`,
+      date:d.toISOString().split("T")[0],
+      cotton_price:180+Math.round((Math.random()*20-10)),
+      dyes_price:95+Math.round((Math.random()*10-5)),
+      power_index:100+Math.round((Math.random()*8-4)),
+      isDummy:true,
+    });
+  }
+  return days;
+}
+function getMarketPitch(demand){
+  if(demand>10)return{
+    title:"🔴 High Demand — Lock Orders Now",
+    text:"Festival / export season demand is heating up. Cotton, yarn and dyeing costs are likely to move up from here. Advise customers to lock in quantity and price now, before the next round of hikes — position it as a limited-time rate, not a routine order.",
+    color:C.red,bg:"#FDEDEC",border:"#F5B7B1",label:"BULLISH — SELLER'S MARKET",
+  };
+  if(demand<-10)return{
+    title:"🟢 Soft Demand — Offer Long-Term Contracts",
+    text:"Demand is soft right now. This is a good window to offer aggressive long-term contract pricing to key customers — lock in their volume for the next few months while your own input costs are favourable, rather than competing purely on one-off order price.",
+    color:C.green,bg:"#E8F8F0",border:"#A9DFBF",label:"BEARISH — BUYER'S MARKET",
+  };
+  return{
+    title:"🔵 Stable Market — Steady Pricing",
+    text:"Demand and input costs are broadly stable. Hold current pricing, avoid discounting reflexively, and focus the pitch on reliability, quality and service rather than price — this is the window to deepen relationships rather than chase volume.",
+    color:C.blue,bg:"#EAF4FC",border:"#AED6F1",label:"NEUTRAL — STABLE MARKET",
+  };
+}
+function MarketTab({data,onAddPrice}){
+  const[demand,setDemand]=useState(0);
+  const[form,setForm]=useState({date:today(),cotton_price:"",dyes_price:"",power_index:""});
+  const sf=(k,v)=>setForm(p=>({...p,[k]:v}));
+
+  const loggedPrices=data.materialPrices||[];
+  const prices=useMemo(()=>{
+    const list=loggedPrices.length>0?loggedPrices:generateDummyMaterialPrices();
+    return [...list].sort((a,b)=>new Date(a.date)-new Date(b.date));
+  },[loggedPrices]);
+  const usingDummy=loggedPrices.length===0;
+
+  const latest=prices[prices.length-1];
+  const prev=prices.length>1?prices[prices.length-2]:null;
+  const trend=(key)=>{
+    if(!prev)return null;
+    const diff=(+latest[key]||0)-(+prev[key]||0);
+    if(Math.abs(diff)<0.01)return{arrow:"→",color:C.muted};
+    return diff>0?{arrow:"▲",color:C.red}:{arrow:"▼",color:C.green};
+  };
+
+  const chartData=prices.map(p=>({
+    label:new Date(p.date).toLocaleDateString("en-IN",{day:"2-digit",month:"short"}),
+    Cotton:+p.cotton_price||0,
+    Dyes:+p.dyes_price||0,
+    Power:+p.power_index||0,
+  }));
+
+  const pitch=getMarketPitch(demand);
+
+  return(<div>
+    <SecTitle>💹 Market Intelligence</SecTitle>
+    {usingDummy&&<div style={{background:"#FEF9E7",borderRadius:10,padding:"10px 13px",marginBottom:14,fontSize:12,color:"#7D6608",border:"1px solid #F9E79F"}}>
+      Showing illustrative sample data — log this week's prices below to start tracking your own real trend.
+    </div>}
+
+    {/* KPI row — latest logged prices with trend arrow vs previous entry */}
+    <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:10,marginBottom:16}}>
+      {[
+        {key:"cotton_price",label:"Cotton / Yarn",unit:"₹/kg",color:C.blue},
+        {key:"dyes_price",label:"Dyes / Chemicals",unit:"₹/kg",color:C.purple},
+        {key:"power_index",label:"Power / Gas",unit:"Index",color:C.orange},
+      ].map(k=>{
+        const t=trend(k.key);
+        return(<div key={k.key} style={{background:C.card,borderRadius:14,padding:"12px 10px",borderLeft:`4px solid ${k.color}`,boxShadow:"0 1px 8px rgba(0,0,0,0.06)"}}>
+          <div style={{fontSize:9.5,color:C.muted,fontWeight:700,textTransform:"uppercase",letterSpacing:0.3}}>{k.label}</div>
+          <div style={{fontSize:16,fontWeight:900,color:k.color,marginTop:3}}>{k.unit==="₹/kg"?"₹":""}{fmt(latest?latest[k.key]:0)}{k.unit==="Index"?"":""}</div>
+          <div style={{fontSize:10,color:C.muted,marginTop:1}}>{k.unit}{t&&<span style={{color:t.color,fontWeight:800,marginLeft:6}}>{t.arrow}</span>}</div>
+        </div>);
+      })}
+    </div>
+
+    {/* Trend chart */}
+    <div style={{background:C.card,borderRadius:14,padding:16,marginBottom:16,boxShadow:"0 1px 8px rgba(0,0,0,0.06)"}}>
+      <B style={{fontSize:14,color:C.navy,marginBottom:4,display:"block"}}>Raw Material Price Trend</B>
+      <Mute style={{marginBottom:10}}>Cotton/Yarn, Dyes/Chemicals &amp; Power/Gas over time</Mute>
+      <ResponsiveContainer width="100%" height={260}>
+        <LineChart data={chartData} margin={{top:4,right:8,left:0,bottom:4}}>
+          <CartesianGrid strokeDasharray="3 3" stroke="#F0F4F8"/>
+          <XAxis dataKey="label" tick={{fontSize:10}} tickLine={false}/>
+          <YAxis tick={{fontSize:10}} tickLine={false} axisLine={false}/>
+          <Tooltip/>
+          <Legend iconSize={10} wrapperStyle={{fontSize:11}}/>
+          <Line type="monotone" dataKey="Cotton" stroke={C.blue} strokeWidth={2.5} dot={{r:3,fill:C.blue}}/>
+          <Line type="monotone" dataKey="Dyes" stroke={C.purple} strokeWidth={2.5} dot={{r:3,fill:C.purple}}/>
+          <Line type="monotone" dataKey="Power" stroke={C.orange} strokeWidth={2.5} dot={{r:3,fill:C.orange}}/>
+        </LineChart>
+      </ResponsiveContainer>
+    </div>
+
+    {/* Log this week's prices */}
+    <div style={{background:C.card,borderRadius:14,padding:16,marginBottom:16,boxShadow:"0 1px 8px rgba(0,0,0,0.06)"}}>
+      <B style={{fontSize:14,color:C.navy,marginBottom:12,display:"block"}}>Log This Week's Prices</B>
+      <F label="Date"><input type="date" value={form.date} onChange={e=>sf("date",e.target.value)} style={IS}/></F>
+      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8}}>
+        <F label="Cotton ₹/kg"><input type="number" value={form.cotton_price} onChange={e=>sf("cotton_price",e.target.value)} placeholder="180" style={IS}/></F>
+        <F label="Dyes ₹/kg"><input type="number" value={form.dyes_price} onChange={e=>sf("dyes_price",e.target.value)} placeholder="95" style={IS}/></F>
+        <F label="Power Index"><input type="number" value={form.power_index} onChange={e=>sf("power_index",e.target.value)} placeholder="100" style={IS}/></F>
+      </div>
+      <SaveBtn color={C.navy} onClick={()=>{
+        if(!form.cotton_price&&!form.dyes_price&&!form.power_index)return alert("Enter at least one price");
+        onAddPrice(form);
+        setForm({date:today(),cotton_price:"",dyes_price:"",power_index:""});
+      }}>💾 Save Entry</SaveBtn>
+    </div>
+
+    {/* Demand forecaster + dynamic pitch */}
+    <div style={{background:C.card,borderRadius:14,padding:16,marginBottom:16,boxShadow:"0 1px 8px rgba(0,0,0,0.06)"}}>
+      <B style={{fontSize:14,color:C.navy,marginBottom:4,display:"block"}}>Demand Forecaster</B>
+      <Mute style={{marginBottom:14}}>Slide to reflect upcoming Festival/Export season demand — the pitch below updates live.</Mute>
+      <input
+        type="range" min={-20} max={20} value={demand}
+        onChange={e=>setDemand(+e.target.value)}
+        style={{width:"100%",accentColor:pitch.color}}
+      />
+      <Row style={{marginTop:4}}>
+        <span style={{fontSize:10.5,color:C.green,fontWeight:700}}>◀ Low Demand</span>
+        <span style={{fontSize:13,fontWeight:900,color:pitch.color}}>{demand>0?"+":""}{demand}</span>
+        <span style={{fontSize:10.5,color:C.red,fontWeight:700}}>High Demand ▶</span>
+      </Row>
+    </div>
+
+    <div style={{background:pitch.bg,borderRadius:14,padding:16,border:`1.5px solid ${pitch.border}`}}>
+      <div style={{fontSize:10,color:pitch.color,fontWeight:800,letterSpacing:0.5,marginBottom:6}}>{pitch.label}</div>
+      <B style={{fontSize:15,color:pitch.color,marginBottom:8,display:"block"}}>{pitch.title}</B>
+      <div style={{fontSize:12.5,color:C.navy,lineHeight:1.7}}>{pitch.text}</div>
     </div>
   </div>);
 }
