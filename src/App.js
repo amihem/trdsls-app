@@ -6,22 +6,37 @@ import Login from './Login';
 
 const SK = "fabric-sales-v3-trading";
 const EMPTY = { customers:[], suppliers:[], products:[], tradingSales:[], tradingPayments:[], debitNotes:[], creditNotes:[], enquiries:[], trash:[], materialPrices:[], companySettings:{name:"Navkar Fabrics",address:"",gstin:"",phone:"",email:"",state:"Delhi",bankName:"",bankAccount:"",bankIFSC:"",terms:"1. Goods once sold will not be taken back.\n2. Interest @ 18% p.a. will be charged if payment is not made within the stipulated time.\n3. Subject to jurisdiction only."}, appSettings:{defaultGstRate:"5",defaultCommissionRate:"1.5",defaultCreditDays:"30",backupReminderDays:"7",trashRetention:"20"} };
+// Returns {data,updatedAt} on success, or {error:true} if Supabase could NOT be read.
+// IMPORTANT: on error the caller must NOT save anything over the cloud copy.
 async function loadData(userId){
   try{
-    const{data:row,error}=await supabase.from('user_data').select('data').eq('user_id',userId).maybeSingle();
-    if(error)console.error('SUPABASE LOAD ERROR:',error);
-    if(row&&row.data)return{...EMPTY,...row.data};
-  }catch(e){console.error('SUPABASE LOAD EXCEPTION:',e);}
-  // one-time migration: no Supabase row yet, fall back to old browser localStorage data if present
-  try{const r=localStorage.getItem(SK);if(r)return{...EMPTY,...JSON.parse(r)};}catch(e){}
-  return{...EMPTY};
+    const{data:row,error}=await supabase.from('user_data').select('data,updated_at').eq('user_id',userId).maybeSingle();
+    if(error){console.error('SUPABASE LOAD ERROR:',error);return{error:true};}
+    if(row&&row.data)return{data:{...EMPTY,...row.data},updatedAt:row.updated_at};
+    if(row)return{data:{...EMPTY},updatedAt:row.updated_at};
+    // no cloud row yet (first login): one-time migration from old browser localStorage if present
+    try{const r=localStorage.getItem(SK);if(r)return{data:{...EMPTY,...JSON.parse(r)},updatedAt:null};}catch(e){}
+    return{data:{...EMPTY},updatedAt:null};
+  }catch(e){console.error('SUPABASE LOAD EXCEPTION:',e);return{error:true};}
 }
-async function saveData(userId,d){
+// Optimistic-lock save: only writes if the cloud row is still the version this device last saw.
+// Returns {ok:true,updatedAt} | {ok:false,conflict:true} | {ok:false,error}
+async function saveData(userId,d,lastSeen){
   try{
-    const{error}=await supabase.from('user_data').upsert({user_id:userId,data:d,updated_at:new Date().toISOString()});
-    if(error)console.error('SUPABASE SAVE ERROR:',error);
-    else console.log('Saved to Supabase OK');
-  }catch(e){console.error('SUPABASE SAVE EXCEPTION:',e);}
+    const now=new Date().toISOString();
+    if(lastSeen===null||lastSeen===undefined){
+      const{data:ins,error}=await supabase.from('user_data').insert({user_id:userId,data:d,updated_at:now}).select('updated_at');
+      if(error){
+        if(error.code==='23505')return{ok:false,conflict:true};
+        console.error('SUPABASE SAVE ERROR:',error);return{ok:false,error};
+      }
+      return{ok:true,updatedAt:(ins&&ins[0]&&ins[0].updated_at)||now};
+    }
+    const{data:upd,error}=await supabase.from('user_data').update({data:d,updated_at:now}).eq('user_id',userId).eq('updated_at',lastSeen).select('updated_at');
+    if(error){console.error('SUPABASE SAVE ERROR:',error);return{ok:false,error};}
+    if(!upd||upd.length===0)return{ok:false,conflict:true};
+    return{ok:true,updatedAt:upd[0].updated_at};
+  }catch(e){console.error('SUPABASE SAVE EXCEPTION:',e);return{ok:false,error:e};}
 }
 
 const fmt   = n => Number(n||0).toLocaleString("en-IN",{maximumFractionDigits:2});
@@ -120,7 +135,7 @@ const INDIA_STATES=["Delhi","Uttar Pradesh","Haryana","Punjab","Rajasthan","Guja
 // Amount is treated as GST-INCLUSIVE. Splits it into taxable value + CGST/SGST (same state) or IGST (different state).
 function calcGST(amount,buyerState,gstRatePct,sellerState){
   const seller=sellerState||SELLER_STATE;
-  const rate=(+gstRatePct||5);
+  const _g=parseFloat(gstRatePct);const rate=isNaN(_g)?5:_g;
   const amt=+amount||0;
   const taxable=amt/(1+rate/100);
   const gstAmt=amt-taxable;
@@ -275,8 +290,10 @@ function generateInvoice(sale,allSales,customer,companySettings){
   const grandTotal=Math.round(preRoundTotal);
   const roundOff=grandTotal-preRoundTotal;
   const sameState=lines[0]?lines[0].gp.sameState:true;
-  const rate=lines[0]?lines[0].gp.rate:5;
-  const isExempt=rate===0;
+  const rateMap={};
+  lines.forEach(l=>{const r=l.gp.rate;const m=rateMap[r]||(rateMap[r]={rate:r,taxable:0,cgst:0,sgst:0,igst:0});m.taxable+=l.lineTaxable;m.cgst+=l.lineCgst;m.sgst+=l.lineSgst;m.igst+=l.lineIgst;});
+  const rateGroups=Object.values(rateMap).sort((a,b)=>a.rate-b.rate);
+  const isExempt=rateGroups.every(g=>g.rate===0);
 
   const rows=lines.map((l,i)=>`<tr>
       <td>${i+1}</td>
@@ -290,10 +307,10 @@ function generateInvoice(sale,allSales,customer,companySettings){
 
   const gstRows=isExempt
     ?`<tr><td colspan="6" style="text-align:right">GST</td><td style="text-align:right">Exempt</td></tr>`
-    :sameState
-      ?`<tr><td colspan="6" style="text-align:right">CGST @ ${rate/2}%</td><td style="text-align:right">₹${fmt(totalCgst)}</td></tr>
-        <tr><td colspan="6" style="text-align:right">SGST @ ${rate/2}%</td><td style="text-align:right">₹${fmt(totalSgst)}</td></tr>`
-      :`<tr><td colspan="6" style="text-align:right">IGST @ ${rate}% (${buyerState})</td><td style="text-align:right">₹${fmt(totalIgst)}</td></tr>`;
+    :rateGroups.filter(g=>g.rate>0).map(g=>sameState
+      ?`<tr><td colspan="6" style="text-align:right">CGST @ ${g.rate/2}%</td><td style="text-align:right">₹${fmt(g.cgst)}</td></tr>
+        <tr><td colspan="6" style="text-align:right">SGST @ ${g.rate/2}%</td><td style="text-align:right">₹${fmt(g.sgst)}</td></tr>`
+      :`<tr><td colspan="6" style="text-align:right">IGST @ ${g.rate}% (${buyerState})</td><td style="text-align:right">₹${fmt(g.igst)}</td></tr>`).join("");
 
   const roundRow=Math.abs(roundOff)>=0.005?`<tr class="sub-row"><td colspan="6" style="text-align:right">${roundOff>=0?"Add":"Less"}: Rounded Off</td><td style="text-align:right">${roundOff>=0?"+":"-"}₹${fmt(Math.abs(roundOff))}</td></tr>`:"";
 
@@ -360,7 +377,7 @@ function generateInvoice(sale,allSales,customer,companySettings){
     </tbody></table>
     <div class="words-box">${amountWords}</div>
     ${!isExempt?`<table class="taxtable"><thead><tr><th>Tax Rate</th><th style="text-align:right">Taxable Amt.</th>${sameState?`<th style="text-align:right">CGST</th><th style="text-align:right">SGST</th>`:`<th style="text-align:right">IGST</th>`}<th style="text-align:right">Total Tax</th></tr></thead>
-      <tbody><tr><td>${rate}%</td><td style="text-align:right">₹${fmt(totalTaxable)}</td>${sameState?`<td style="text-align:right">₹${fmt(totalCgst)}</td><td style="text-align:right">₹${fmt(totalSgst)}</td>`:`<td style="text-align:right">₹${fmt(totalIgst)}</td>`}<td style="text-align:right">₹${fmt(totalTax)}</td></tr></tbody>
+      <tbody>${rateGroups.map(g=>`<tr><td>${g.rate}%</td><td style="text-align:right">₹${fmt(g.taxable)}</td>${sameState?`<td style="text-align:right">₹${fmt(g.cgst)}</td><td style="text-align:right">₹${fmt(g.sgst)}</td>`:`<td style="text-align:right">₹${fmt(g.igst)}</td>`}<td style="text-align:right">₹${fmt(g.cgst+g.sgst+g.igst)}</td></tr>`).join("")}</tbody>
     </table>`:""}
     ${(co.bankName||co.bankAccount)?`<div class="bank-box"><b>Bank Details :</b> ${co.bankName||""}${co.bankIFSC?`, IFSC: ${co.bankIFSC}`:""}${co.bankAccount?`<br/>A/c No: ${co.bankAccount}`:""}</div>`:""}
     <div class="footer">
@@ -418,8 +435,53 @@ function App({user}){
   const restoreRef=useRef(null);const importRef=useRef(null);
   const navigateTab=(tabId,hint=null)=>{setNavHint(hint);setTab(tabId);};
 
-  useEffect(()=>{loadData(user.id).then(setData);setLastBackupAt(getLastBackup());},[]);
-  useEffect(()=>{if(data)saveData(user.id,data);},[data]);
+  const[loadError,setLoadError]=useState(false);
+  const[saveState,setSaveState]=useState("saved");
+  const[conflict,setConflict]=useState(false);
+  const seenRef=useRef(null);const dataRef=useRef(null);const skipSaveRef=useRef(true);
+  const savingRef=useRef(false);const dirtyRef=useRef(false);const conflictRef=useRef(false);
+
+  const initLoad=()=>{
+    setLoadError(false);
+    loadData(user.id).then(r=>{
+      if(r.error){setLoadError(true);return;}
+      seenRef.current=r.updatedAt;
+      // first-ever login (no cloud row): let the initial data get saved once; otherwise skip the save triggered by loading
+      skipSaveRef.current=r.updatedAt!==null;
+      setData(r.data);
+    });
+  };
+  const doSave=async()=>{
+    if(savingRef.current||conflictRef.current||!dirtyRef.current||!dataRef.current)return;
+    savingRef.current=true;dirtyRef.current=false;setSaveState("saving");
+    const res=await saveData(user.id,dataRef.current,seenRef.current);
+    savingRef.current=false;
+    if(res.ok){
+      seenRef.current=res.updatedAt;
+      if(dirtyRef.current)doSave();else setSaveState("saved");
+    }else if(res.conflict){
+      conflictRef.current=true;setConflict(true);setSaveState("error");
+    }else{
+      dirtyRef.current=true;setSaveState("error");
+    }
+  };
+  useEffect(()=>{initLoad();setLastBackupAt(getLastBackup());},[]);
+  useEffect(()=>{
+    if(!data)return;
+    dataRef.current=data;
+    if(skipSaveRef.current){skipSaveRef.current=false;return;}
+    dirtyRef.current=true;setSaveState("saving");
+    const t=setTimeout(doSave,800);
+    return()=>clearTimeout(t);
+  },[data]);
+  useEffect(()=>{
+    const onHide=()=>{if(document.visibilityState==="hidden")doSave();};
+    const onUnload=(e)=>{if(dirtyRef.current||savingRef.current){e.preventDefault();e.returnValue="";}};
+    document.addEventListener("visibilitychange",onHide);
+    window.addEventListener("pagehide",doSave);
+    window.addEventListener("beforeunload",onUnload);
+    return()=>{document.removeEventListener("visibilitychange",onHide);window.removeEventListener("pagehide",doSave);window.removeEventListener("beforeunload",onUnload);};
+  },[]);
 
   const showToast=(msg,err,action)=>{setToast({msg,err,action});setTimeout(()=>setToast(null),action?7000:3000);};
   const add=(section,rec)=>{setData(p=>({...p,[section]:[...p[section],{...rec,id:uid()}]}));showToast("Saved successfully.");setModal(null);};
@@ -463,9 +525,24 @@ function App({user}){
     else if(result==="cancelled"){/* user cancelled the share sheet — do nothing */}
     else{exportBackup(data);setLastBackupAt(getLastBackup());showToast("Direct share isn't supported here — file downloaded, attach it manually in WhatsApp/Email.");}
   };
-  const handleLogout=()=>{
+  const handleLogout=async()=>{
     if(!window.confirm("Log out of this account?\n\nYour data stays safely synced in the cloud — you'll just need to sign in again to see it here."))return;
+    await doSave();
+    if(conflictRef.current||dirtyRef.current){
+      if(!window.confirm("Kuch changes cloud par save NAHI hue hain. Phir bhi log out karein? (Pehle Backup download kar lena behtar hai)"))return;
+    }
     supabase.auth.signOut();
+  };
+  // Save one bill (1..n product lines). oldRecs = the lines being replaced (empty for a new bill).
+  const saveSaleLines=(newRecs,oldRecs)=>{
+    const oldIds=new Set((oldRecs||[]).map(r=>r.id));
+    setData(p=>{
+      let inserted=false;const out=[];
+      p.tradingSales.forEach(x=>{if(oldIds.has(x.id)){if(!inserted){out.push(...newRecs);inserted=true;}}else out.push(x);});
+      if(!inserted)out.push(...newRecs);
+      return{...p,tradingSales:out};
+    });
+    showToast(oldIds.size?"Bill updated.":"Saved successfully.");setModal(null);
   };
   const updateCompanySettings=(updates)=>{
     setData(p=>({...p,companySettings:{...p.companySettings,...updates}}));
@@ -552,6 +629,7 @@ function App({user}){
     else if(r.kind==="enquiry")navigateTab("Enquiry",null);
   };
 
+  if(loadError)return(<div style={{display:"flex",alignItems:"center",justifyContent:"center",minHeight:"100vh",background:C.navy,flexDirection:"column",gap:14,padding:24,textAlign:"center"}}><div style={{fontSize:44}}>⚠️</div><div style={{color:C.gold,fontWeight:800,fontSize:16}}>Cloud se data load nahi ho paya</div><div style={{color:"rgba(255,255,255,0.7)",fontSize:13.5,maxWidth:340}}>Internet check karo aur Retry dabao. Aapka purana data safe hai — jab tak load nahi hota, kuch save nahi kiya jayega.</div><button onClick={initLoad} style={{background:C.gold,color:C.navy,border:"none",borderRadius:11,padding:"12px 28px",fontSize:15,fontWeight:800,cursor:"pointer"}}>Retry</button></div>);
   if(!data)return(<div style={{display:"flex",alignItems:"center",justifyContent:"center",minHeight:"100vh",background:C.navy,flexDirection:"column",gap:12}}><div style={{fontSize:48}}>🧵</div><div style={{color:C.gold,fontWeight:800,fontSize:16}}>Loading…</div></div>);
 
   // ── Computed ─────────────────────────────────────────────────
@@ -617,6 +695,9 @@ function App({user}){
         {TABS.map(t=>(<button key={t.id} onClick={()=>navigateTab(t.id)} style={{flex:"0 0 auto",padding:"12px 14px",fontSize:12,fontWeight:tab===t.id?800:500,color:tab===t.id?C.gold:"rgba(255,255,255,0.6)",background:"none",border:"none",borderBottom:tab===t.id?`3px solid ${C.gold}`:"3px solid transparent",cursor:"pointer",whiteSpace:"nowrap",minHeight:44,position:"relative"}}>{t.icon} {t.label}{t.id==="Reports"&&overdueCount>0&&<span style={{position:"absolute",top:6,right:4,background:C.red,color:"#fff",borderRadius:10,fontSize:9,fontWeight:800,padding:"1px 5px"}}>{overdueCount}</span>}</button>))}
       </div>
       <div className="main" style={{marginLeft:0,padding:"18px 16px 40px",maxWidth:860}}>
+        {conflict&&(<div style={{position:"fixed",left:0,right:0,bottom:0,zIndex:500,background:"#B03A2E",color:"#fff",padding:"14px 16px calc(env(safe-area-inset-bottom,0px) + 14px)",fontSize:13.5,boxShadow:"0 -2px 12px rgba(0,0,0,0.3)"}}><div style={{fontWeight:800,marginBottom:6}}>⚠️ Dusre device/tab par data update ho chuka hai</div><div style={{marginBottom:10}}>Aapke naye changes cloud par SAVE NAHI hue (taaki purana data overwrite na ho). Pehle apni copy download karo, phir Reload karo.</div><div style={{display:"flex",gap:8}}><button onClick={()=>exportBackup(data)} style={{flex:1,background:"#fff",color:"#B03A2E",border:"none",borderRadius:9,padding:"11px",fontWeight:800,cursor:"pointer"}}>⬇️ Meri copy download</button><button onClick={()=>window.location.reload()} style={{flex:1,background:"rgba(255,255,255,0.18)",color:"#fff",border:"1px solid #fff",borderRadius:9,padding:"11px",fontWeight:800,cursor:"pointer"}}>🔄 Reload latest</button></div></div>)}
+        {!conflict&&saveState==="error"&&(<div style={{position:"fixed",left:0,right:0,bottom:0,zIndex:500,background:"#C0392B",color:"#fff",padding:"12px 16px calc(env(safe-area-inset-bottom,0px) + 12px)",fontSize:13.5,display:"flex",alignItems:"center",gap:10,boxShadow:"0 -2px 12px rgba(0,0,0,0.3)"}}><div style={{flex:1}}>❌ Cloud par save nahi hua (net/permission). Data abhi sirf is screen par hai.</div><button onClick={()=>{dirtyRef.current=true;doSave();}} style={{background:"#fff",color:"#C0392B",border:"none",borderRadius:9,padding:"10px 16px",fontWeight:800,cursor:"pointer"}}>Retry</button></div>)}
+        {!conflict&&saveState==="saving"&&(<div style={{position:"fixed",right:10,bottom:10,zIndex:400,background:"rgba(15,25,35,0.85)",color:C.gold,fontSize:11,fontWeight:700,padding:"5px 10px",borderRadius:20}}>Saving…</div>)}
         {tab==="Dashboard"  &&<DashboardTab data={data} tots={{totTradingSale,totTradingPaid,totTradingOut,totComm}} onNav={(id,hint)=>navigateTab(id,hint)} tradingOut={tradingOut} lastBackupAt={lastBackupAt} onShareBackup={handleShareBackup}/>}
         {tab==="Trading"    &&<TradingTab data={data} onAdd={()=>setModal({type:"sale"})} onAddPay={()=>setModal({type:"payment"})} onAddDebit={()=>setModal({type:"debit"})} onAddCredit={()=>setModal({type:"credit"})} onDel={del} onEdit={(type,rec)=>setModal({type:`edit-${type}`,rec})} tradingOut={tradingOut} initialSearch={navHint?.search} initialView={navHint?.view}/>}
         {tab==="Analytics"  &&<AnalyticsTab data={data} tradingOut={tradingOut}/>}
@@ -626,11 +707,11 @@ function App({user}){
         {tab==="Reports"    &&<ReportsTab data={data} tradingOut={tradingOut} tots={{totTradingSale,totTradingPaid,totTradingOut,totComm}} generatePDF={generatePDF} onAddPay={(pre)=>setModal({type:"payment",preCustomer:pre})} initialRep={navHint?.repView} initialCustomer={navHint?.customer}/>}
         {tab==="Settings"   &&<SettingsTab data={data} onSave={updateCompanySettings} onSaveApp={updateAppSettings}/>}
       </div>
-      {modal?.type==="sale"          &&<SaleModal    data={data} onSave={r=>add("tradingSales",r)}    onClose={()=>setModal(null)}/>}
+      {modal?.type==="sale"          &&<SaleModal    data={data} onSave={saveSaleLines}    onClose={()=>setModal(null)}/>}
       {modal?.type==="payment"       &&<PaymentModal data={data} onSave={r=>add("tradingPayments",r)} onClose={()=>setModal(null)} preCustomer={modal.preCustomer}/>}
       {modal?.type==="debit"         &&<DebitModal   data={data} onSave={r=>add("debitNotes",r)}      onClose={()=>setModal(null)}/>}
       {modal?.type==="credit"        &&<CreditModal  data={data} onSave={r=>add("creditNotes",r)}     onClose={()=>setModal(null)}/>}
-      {modal?.type==="edit-sale"     &&<SaleModal    data={data} onSave={r=>updateMaster("tradingSales",{...modal.rec,...r})}    onClose={()=>setModal(null)} initial={modal.rec}/>}
+      {modal?.type==="edit-sale"     &&<SaleModal    data={data} onSave={saveSaleLines}    onClose={()=>setModal(null)} initial={modal.rec}/>}
       {modal?.type==="edit-payment"  &&<PaymentModal data={data} onSave={r=>updateMaster("tradingPayments",{...modal.rec,...r})} onClose={()=>setModal(null)} initial={modal.rec}/>}
       {modal?.type==="edit-debit"    &&<DebitModal   data={data} onSave={r=>updateMaster("debitNotes",{...modal.rec,...r})}      onClose={()=>setModal(null)} initial={modal.rec}/>}
       {modal?.type==="edit-credit"   &&<CreditModal  data={data} onSave={r=>updateMaster("creditNotes",{...modal.rec,...r})}     onClose={()=>setModal(null)} initial={modal.rec}/>}
@@ -2759,85 +2840,152 @@ function BackupPreviewModal({preview,currentData,onConfirm,onCancel}){
 }
 
 // ─── MODALS ──────────────────────────────────────────────────────
+function round2(n){return Math.round((+n||0)*100)/100;}
+// One product line. mode "excl" = rate is BEFORE GST (GST added on top); "incl" = rate already includes GST.
+// Returns the GST-inclusive line amount (what is stored/owed), plus its taxable value and GST.
+function calcSaleLine(l,mode){
+  const qty=+l.qty||0,rate=+l.rate||0,g=+l.gstRate||0;
+  const key=`${l.qty}|${l.rate}|${l.gstRate}|${mode}`;
+  if(l.origKey&&l.origKey===key&&l.origAmt!=null){const incl=+l.origAmt;const taxable=incl/(1+g/100);return{incl,taxable,gst:incl-taxable};}
+  const base=qty*rate;
+  const incl=round2(mode==="incl"?base:base*(1+g/100));
+  const taxable=incl/(1+g/100);
+  return{incl,taxable,gst:incl-taxable};
+}
 function SaleModal({data,onSave,onClose,initial}){
-  const[f,sf]=useState(initial?{...initial,amount:String((+initial.amount||0)-(+initial.freight||0))}:{date:today(),billNo:"",customerName:"",productName:"",supplierName:"",meters:"",rate:"",amount:"",freight:"0",hsn:"",unit:"Mtr",gstRate:data?.appSettings?.defaultGstRate||"5",commissionRate:data?.appSettings?.defaultCommissionRate||"1.5",remarks:""});
-  const s=(k,v)=>sf(p=>({...p,[k]:v}));
-  const selectProd=(name)=>{
-    const p=data.products.find(p=>p.name===name);
-    sf(pr=>({...pr,productName:name,supplierName:p?.supplierName||pr.supplierName,hsn:p?.hsn||pr.hsn,unit:p?.unit||pr.unit,gstRate:p?.gstRate||pr.gstRate,commissionRate:p?.commissionRate||pr.commissionRate}));
+  // A bill = one or more records sharing the same Bill No + customer (that is how the invoice is built).
+  const[group]=useState(()=>initial?getInvoiceLineItems(initial,data.tradingSales):[]);
+  const defGst=String(data?.appSettings?.defaultGstRate||"5");
+  const defComm=String(data?.appSettings?.defaultCommissionRate||"1.5");
+  const blankItem=()=>({productName:"",supplierName:"",hsn:"",unit:"Mtr",qty:"",rate:"",gstRate:defGst,commissionRate:defComm});
+  const[mode,setMode]=useState(()=>group.length?(group[0].rateType||"incl"):"excl");
+  const[head,setHead]=useState(()=>group.length?{date:group[0].date,billNo:group[0].billNo||"",customerName:group[0].customerName||"",remarks:group[0].remarks||""}:{date:today(),billNo:"",customerName:"",remarks:""});
+  const[items,setItems]=useState(()=>{
+    if(!group.length)return[blankItem()];
+    const m=group[0].rateType||"incl";
+    return group.map(r=>{
+      const fr=+r.freight||0;const prodIncl=(+r.amount||0)-fr;const qty=+r.meters||0;
+      const rate=r.rateType?String(r.rate??""):(qty>0?String(+(prodIncl/qty).toFixed(4)):String(r.rate||""));
+      const it={productName:r.productName||"",supplierName:r.supplierName||"",hsn:r.hsn||"",unit:r.unit||"Mtr",qty:String(r.meters??""),rate,gstRate:String(r.gstRate||defGst),commissionRate:String(r.commissionRate||defComm)};
+      it.origKey=`${it.qty}|${it.rate}|${it.gstRate}|${m}`;it.origAmt=prodIncl;
+      return it;
+    });
+  });
+  const[freight,setFreight]=useState(()=>{
+    if(!group.length)return"";
+    const fr=group.reduce((a,r)=>a+(+r.freight||0),0);if(!fr)return"";
+    const m=group[0].rateType||"incl";const g=+group[0].gstRate||0;
+    return String(m==="excl"?round2(fr/(1+g/100)):fr);
+  });
+  const sh=(k,v)=>setHead(p=>({...p,[k]:v}));
+  const si=(i,patch)=>setItems(p=>p.map((it,j)=>j===i?{...it,...patch}:it));
+  const selectProd=(i,name)=>{const p=data.products.find(p=>p.name===name);setItems(prev=>prev.map((it,j)=>j===i?{...it,productName:name,supplierName:p?.supplierName||it.supplierName,hsn:p?.hsn||it.hsn,unit:p?.unit||it.unit,gstRate:p?.gstRate?String(p.gstRate):it.gstRate,commissionRate:p?.commissionRate?String(p.commissionRate):it.commissionRate}:it));};
+
+  const cust=data.customers.find(c=>c.name===head.customerName);
+  const sellerState=data.companySettings?.state||SELLER_STATE;
+  const buyerState=cust?.state||sellerState;
+  const calc=items.map(it=>calcSaleLine(it,mode));
+  const g1=+items[0].gstRate||0;
+  const fe=+freight||0;
+  const freightIncl=round2(mode==="excl"?fe*(1+g1/100):fe);
+  const productTotal=calc.reduce((a,c)=>a+c.incl,0);
+  const total=productTotal+freightIncl;
+  const byRate={};
+  const addTax=(rate,incl)=>{const g=calcGST(incl,buyerState,rate,sellerState);const m=byRate[g.rate]||(byRate[g.rate]={rate:g.rate,taxable:0,gst:0,sameState:g.sameState});m.taxable+=g.taxable;m.gst+=g.gstAmt;};
+  items.forEach((it,i)=>addTax(it.gstRate,calc[i].incl));
+  if(freightIncl>0)addTax(items[0].gstRate,freightIncl);
+  const rates=Object.values(byRate).sort((a,b)=>a.rate-b.rate);
+  const totTaxable=rates.reduce((a,r)=>a+r.taxable,0);
+  const sameState=normName(buyerState)===normName(sellerState);
+
+  const save=()=>{
+    if(!head.customerName)return alert("Customer required");
+    const valid=items.map((it,i)=>({it,c:calc[i],i})).filter(x=>x.it.productName||x.it.qty||x.it.rate);
+    if(!valid.length)return alert("Kam se kam ek product add karo");
+    for(const x of valid){if(!(x.c.incl>0))return alert(`Product ${x.i+1}: Qty aur Rate daalo`);}
+    if(valid.length>1&&!head.billNo.trim())return alert("Ek se zyada products ke liye Bill No zaroori hai (invoice ek hi number se banta hai)");
+    const groupIds=new Set(group.map(r=>r.id));
+    if(!warnIfDuplicateBillNo(head.billNo,data.tradingSales.filter(r=>!groupIds.has(r.id)),null))return;
+    if(!warnIfNearDuplicateCustomer(head.customerName,data.customers))return;
+    const newTotal=valid.reduce((a,x)=>a+x.c.incl,0)+freightIncl;
+    if(cust&&cust.creditLimit&&+cust.creditLimit>0){
+      const limit=+cust.creditLimit;
+      const oldTotal=group.reduce((a,r)=>a+(+r.amount||0),0);
+      const projected=computeCustomerOutstanding(head.customerName,data)-oldTotal+newTotal;
+      if(projected>limit){
+        const ok=window.confirm(`⚠️ Credit Limit Alert!\n\n${head.customerName}'s credit limit is ₹${fmt(limit)}.\nProjected outstanding after this sale: ₹${fmt(projected)} — over by ₹${fmt(projected-limit)}.\n\nTap OK to save anyway, or Cancel to review.`);
+        if(!ok)return;
+      }
+    }
+    // Each product = one record (so Outstanding / Commission / Ledger keep working unchanged).
+    // `amount` = GST-inclusive total owed for that line (+ freight on the first line); `rate` is stored exactly as typed,
+    // with `rateType` ("excl"/"incl") remembering how it was typed.
+    const recs=valid.map((x,k)=>{
+      const old=group[x.i];
+      const fr=k===0?freightIncl:0;
+      return{...(old||{}),id:old?.id||uid(),date:head.date,billNo:head.billNo.trim(),customerName:head.customerName,
+        productName:x.it.productName,supplierName:x.it.supplierName,meters:x.it.qty,rate:x.it.rate,rateType:mode,
+        amount:round2(x.c.incl+fr),freight:fr,hsn:x.it.hsn,unit:x.it.unit,gstRate:x.it.gstRate,commissionRate:x.it.commissionRate,remarks:head.remarks};
+    });
+    onSave(recs,group);
   };
-  useEffect(()=>{if(f.meters&&f.rate&&!initial)s("amount",(parseFloat(f.meters)*parseFloat(f.rate)).toFixed(2));},[f.meters,f.rate]);
-  return(<ModalBase title={initial?"Edit Sale":"Add Trading Sale"} onClose={onClose}>
-    <F label="Date *"><input type="date" value={f.date} onChange={e=>s("date",e.target.value)} style={IS}/></F>
-    <F label="Bill No"><input value={f.billNo} onChange={e=>s("billNo",e.target.value)} placeholder="Invoice / Bill number" style={IS}/></F>
-    <F label="Customer *"><SmartInput value={f.customerName} onChange={v=>s("customerName",v)} placeholder="Customer name" list={data.customers.map(c=>c.name)} idPrefix="sl-c"/></F>
+
+  return(<ModalBase title={initial?"Edit Sale / Bill":"Add Trading Sale"} onClose={onClose}>
+    <F label="Date *"><input type="date" value={head.date} onChange={e=>sh("date",e.target.value)} style={IS}/></F>
+    <F label="Bill No"><input value={head.billNo} onChange={e=>sh("billNo",e.target.value)} placeholder="Invoice / Bill number" style={IS}/></F>
+    <F label="Customer *"><SmartInput value={head.customerName} onChange={v=>sh("customerName",v)} placeholder="Customer name" list={data.customers.map(c=>c.name)} idPrefix="sl-c"/></F>
     {(()=>{
-      const cust=data.customers.find(c=>c.name===f.customerName);
       if(!cust||!cust.creditLimit||+cust.creditLimit<=0)return null;
-      const outstanding=computeCustomerOutstanding(f.customerName,data);
+      const outstanding=computeCustomerOutstanding(head.customerName,data);
       const overBy=outstanding-(+cust.creditLimit);
       return(<div style={{fontSize:11.5,color:overBy>0?C.red:C.muted,marginTop:-9,marginBottom:13,fontWeight:overBy>0?700:400}}>
         {overBy>0?`⚠️ Already ₹${fmt(overBy)} over credit limit (₹${fmt(cust.creditLimit)})`:`Outstanding: ₹${fmt(outstanding)} / Limit: ₹${fmt(cust.creditLimit)}`}
       </div>);
     })()}
-    <F label="Product *"><SmartInput value={f.productName} onChange={selectProd} placeholder="Product" list={data.products.map(p=>p.name)} idPrefix="sl-p"/></F>
-    <F label="Supplier"><SmartInput value={f.supplierName} onChange={v=>s("supplierName",v)} placeholder="Supplier" list={data.suppliers.map(s=>s.name)} idPrefix="sl-s"/></F>
-    <F label="HSN / SAC Code"><input value={f.hsn||""} onChange={e=>s("hsn",e.target.value)} placeholder="Auto-filled from product" style={IS}/></F>
-    <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}>
-      <F label="Meters"><input type="number" value={f.meters} onChange={e=>s("meters",e.target.value)} placeholder="0" style={IS}/></F>
-      <F label="Rate (₹/m)"><input type="number" value={f.rate} onChange={e=>s("rate",e.target.value)} placeholder="0" style={IS}/></F>
-    </div>
-    <F label="Product Amount (₹) — GST inclusive"><input type="number" value={f.amount} onChange={e=>s("amount",e.target.value)} style={{...IS,fontWeight:700}}/></F>
-    <F label="Freight / Coolie Cartage (₹) — GST inclusive, charged to customer"><input type="number" value={f.freight||"0"} onChange={e=>s("freight",e.target.value)} placeholder="0" style={IS}/></F>
-    <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}>
-      <F label="GST % (prices above already include this)">
-        <select value={f.gstRate||"5"} onChange={e=>s("gstRate",e.target.value)} style={IS}>
-          <option value="0">0% (Exempt)</option>
-          <option value="5">5%</option>
-          <option value="12">12%</option>
-          <option value="18">18%</option>
-        </select>
-      </F>
-      <F label="Commission ₹/m"><input type="number" value={f.commissionRate||"1.5"} onChange={e=>s("commissionRate",e.target.value)} placeholder="1.5" style={IS}/></F>
-    </div>
-    {(()=>{
-      if(!f.amount||!f.customerName)return null;
-      const cust=data.customers.find(c=>c.name===f.customerName);
-      const buyerState=cust?.state||data.companySettings?.state||SELLER_STATE;
-      const productAmt=+f.amount||0,freightAmt=+f.freight||0;
-      const gp=calcGST(productAmt,buyerState,f.gstRate,data.companySettings?.state);
-      const gf=calcGST(freightAmt,buyerState,f.gstRate,data.companySettings?.state);
-      const taxable=gp.taxable+gf.taxable,cgst=gp.cgst+gf.cgst,sgst=gp.sgst+gf.sgst,igst=gp.igst+gf.igst;
-      const total=productAmt+freightAmt;
-      return(<div style={{background:"#F8FAFC",borderRadius:10,padding:"10px 12px",marginBottom:13,fontSize:11.5,color:C.navy,lineHeight:1.7}}>
-        <div>Taxable Value: <b>₹{fmt(taxable)}</b>{freightAmt>0?` (product ₹${fmt(gp.taxable)} + freight ₹${fmt(gf.taxable)})`:""}</div>
-        {gp.sameState?<div>CGST {(gp.rate/2)}% + SGST {(gp.rate/2)}%: <b>₹{fmt(cgst)} + ₹{fmt(sgst)}</b></div>:<div>IGST {gp.rate}% ({buyerState} — inter-state): <b>₹{fmt(igst)}</b></div>}
-        <div style={{color:C.muted,fontSize:10.5,marginTop:2}}>Invoice Total: ₹{fmt(total)}</div>
-      </div>);
-    })()}
-    <F label="Remarks"><input value={f.remarks} onChange={e=>s("remarks",e.target.value)} placeholder="Optional" style={IS}/></F>
-    <SaveBtn color={C.blue} onClick={()=>{
-      if(!f.customerName||!f.amount)return alert("Customer and Amount required");
-      if(!warnIfDuplicateBillNo(f.billNo,data.tradingSales,initial?.id))return;
-      if(!warnIfNearDuplicateCustomer(f.customerName,data.customers))return;
-      const cust=data.customers.find(c=>c.name===f.customerName);
-      if(cust&&cust.creditLimit&&+cust.creditLimit>0){
-        const limit=+cust.creditLimit;
-        const currentOutstanding=computeCustomerOutstanding(f.customerName,data);
-        const oldAmount=initial?(+initial.amount||0):0;
-        const totalAmount=(+f.amount||0)+(+f.freight||0);
-        const projected=currentOutstanding-oldAmount+totalAmount;
-        if(projected>limit){
-          const ok=window.confirm(`⚠️ Credit Limit Alert!\n\n${f.customerName}'s credit limit is ₹${fmt(limit)}.\nProjected outstanding after this sale: ₹${fmt(projected)} — over by ₹${fmt(projected-limit)}.\n\nTap OK to save anyway, or Cancel to review.`);
-          if(!ok)return;
-        }
-      }
-      // `amount` saved is the TOTAL bill value (product + freight) — every outstanding/commission/
-      // ledger calculation elsewhere in the app reads `amount` as "what the customer owes for this
-      // bill", so this keeps all of that working unchanged. `freight` is kept separately alongside
-      // it purely so the invoice can show the product/freight split.
-      onSave({...f,amount:(+f.amount||0)+(+f.freight||0),freight:+f.freight||0});
-    }}>Save Sale</SaveBtn>
+    <F label="Rate kaise daal rahe ho?">
+      <SegCtrl val={mode} onChange={setMode} options={[{v:"excl",l:"GST ke bina (Excl.)"},{v:"incl",l:"GST ke saath (Incl.)"}]}/>
+      <div style={{fontSize:11,color:C.muted,marginTop:5}}>{mode==="excl"?"Rate par GST upar se judega (normal invoice).":"Rate mein GST pehle se shamil hai — taxable value apne aap nikalegi."}</div>
+    </F>
+
+    {items.map((it,i)=>(
+      <div key={i} style={{border:`1.5px solid ${C.border}`,borderRadius:13,padding:"12px 12px 4px",marginBottom:12,background:"#FBFCFE"}}>
+        <Row style={{marginBottom:8}}>
+          <B style={{color:C.navy}}>Product {i+1}</B>
+          {items.length>1&&<button onClick={()=>setItems(p=>p.filter((_,j)=>j!==i))} style={{background:"#FDEDEC",color:C.red,border:"none",borderRadius:8,padding:"6px 12px",fontSize:12,fontWeight:700,cursor:"pointer"}}>✕ Remove</button>}
+        </Row>
+        <F label="Product *"><SmartInput value={it.productName} onChange={v=>selectProd(i,v)} placeholder="Product" list={data.products.map(p=>p.name)} idPrefix={`sl-p${i}`}/></F>
+        <F label="Supplier"><SmartInput value={it.supplierName} onChange={v=>si(i,{supplierName:v})} placeholder="Supplier" list={data.suppliers.map(x=>x.name)} idPrefix={`sl-s${i}`}/></F>
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}>
+          <F label="HSN / SAC"><input value={it.hsn||""} onChange={e=>si(i,{hsn:e.target.value})} placeholder="Auto from product" style={IS}/></F>
+          <F label="GST %">
+            <select value={it.gstRate} onChange={e=>si(i,{gstRate:e.target.value})} style={IS}>
+              <option value="0">0% (Exempt)</option><option value="5">5%</option><option value="12">12%</option><option value="18">18%</option>
+            </select>
+          </F>
+        </div>
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}>
+          <F label={`Qty (${it.unit||"Mtr"})`}><input type="number" inputMode="decimal" value={it.qty} onChange={e=>si(i,{qty:e.target.value})} placeholder="0" style={IS}/></F>
+          <F label={`Rate ₹/${it.unit||"m"} (${mode==="excl"?"excl. GST":"incl. GST"})`}><input type="number" inputMode="decimal" value={it.rate} onChange={e=>si(i,{rate:e.target.value})} placeholder="0" style={IS}/></F>
+        </div>
+        <F label="Commission ₹/m"><input type="number" inputMode="decimal" value={it.commissionRate} onChange={e=>si(i,{commissionRate:e.target.value})} placeholder="1.5" style={IS}/></F>
+        <div style={{fontSize:11.5,color:C.navy,background:"#F1F5F9",borderRadius:9,padding:"7px 10px",marginBottom:12,lineHeight:1.6}}>
+          Taxable ₹{fmt(calc[i].taxable)} + GST ₹{fmt(calc[i].gst)} = <b>₹{fmt(calc[i].incl)}</b>
+        </div>
+      </div>
+    ))}
+    <button onClick={()=>setItems(p=>[...p,blankItem()])} style={{width:"100%",background:"#EAF4FC",color:C.blue,border:`1.5px dashed ${C.blue}`,borderRadius:12,padding:13,fontSize:14,fontWeight:800,cursor:"pointer",marginBottom:14}}>＋ Add Another Product</button>
+
+    <F label={`Freight / Coolie Cartage (₹) — ${mode==="excl"?"GST ke bina":"GST ke saath"} (poore bill ka)`}><input type="number" inputMode="decimal" value={freight} onChange={e=>setFreight(e.target.value)} placeholder="0" style={IS}/></F>
+
+    {productTotal>0&&head.customerName&&(<div style={{background:"#F8FAFC",borderRadius:10,padding:"10px 12px",marginBottom:13,fontSize:12,color:C.navy,lineHeight:1.8}}>
+      <div>Taxable Value: <b>₹{fmt(totTaxable)}</b>{freightIncl>0?` (freight ₹${fmt(freightIncl/(1+g1/100))} shamil)`:""}</div>
+      {rates.filter(r=>r.rate>0).map(r=>sameState
+        ?<div key={r.rate}>CGST {r.rate/2}% + SGST {r.rate/2}%: <b>₹{fmt(r.gst/2)} + ₹{fmt(r.gst/2)}</b></div>
+        :<div key={r.rate}>IGST {r.rate}% ({buyerState} — inter-state): <b>₹{fmt(r.gst)}</b></div>)}
+      <div style={{fontSize:14,marginTop:2}}>Invoice Total: <b>₹{fmt(total)}</b></div>
+    </div>)}
+    <F label="Remarks"><input value={head.remarks} onChange={e=>sh("remarks",e.target.value)} placeholder="Optional" style={IS}/></F>
+    <SaveBtn color={C.blue} onClick={save}>Save Sale</SaveBtn>
   </ModalBase>);
 }
 
